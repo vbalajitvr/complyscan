@@ -1,0 +1,32 @@
+{
+  "name": "complyscan",
+  "version": "0.1.0",
+  "description": "Static scanner for EU AI Act Article 12 compliance gaps in Terraform HCL files",
+  "main": "dist/index.js",
+  "bin": {
+    "complyscan": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "keywords": [
+    "terraform",
+    "compliance",
+    "eu-ai-act",
+    "scanner"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "chalk": "^4.1.2",
+    "commander": "^11.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "tsup": "^8.5.1",
+    "typescript": "5.4",
+    "vitest": "^1.6.1"
+  }
+}
