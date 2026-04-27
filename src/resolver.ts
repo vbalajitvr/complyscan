@@ -1,3 +1,4 @@
+import * as path from 'path';
 import { ParsedFile, ResolutionResult, UnresolvableReason } from './types';
 import { getNestedValue } from './utils/resource-helpers';
 
@@ -20,6 +21,7 @@ export function resolveExpression(
   expr: unknown,
   files: ParsedFile[],
   sourceField = 'unknown',
+  sourceFilePath?: string,
 ): ResolutionResult | undefined {
   if (typeof expr !== 'string') return undefined;
 
@@ -43,18 +45,18 @@ export function resolveExpression(
     return resolveAwsRef(resourceType, resourceName, attribute, files);
   }
 
-  // var.X — resolve via variable default if present
+  // var.X — resolve via variable default if present, scoped to the origin module directory
   const varMatch = inner.match(VAR_REF);
   if (varMatch) {
-    const value = resolveVariableDefault(varMatch[1], files);
+    const value = resolveVariableDefault(varMatch[1], files, sourceFilePath);
     if (value !== undefined) return { kind: 'literal', value };
     return { kind: 'unresolvable', expression: expr, reason: 'var-no-default', sourceField };
   }
 
-  // local.X — resolve via locals block if value is a literal
+  // local.X — resolve via locals block if value is a literal, scoped to the origin module directory
   const localMatch = inner.match(LOCAL_REF);
   if (localMatch) {
-    const value = resolveLocal(localMatch[1], files);
+    const value = resolveLocal(localMatch[1], files, sourceFilePath);
     if (value !== undefined) return { kind: 'literal', value };
     return { kind: 'unresolvable', expression: expr, reason: 'local-not-literal', sourceField };
   }
@@ -120,8 +122,14 @@ function resolveAwsRef(
   return { kind: 'address', value: `${resourceType}.${resourceName}`, resourceType, resourceName };
 }
 
-function resolveVariableDefault(name: string, files: ParsedFile[]): string | undefined {
+function resolveVariableDefault(
+  name: string,
+  files: ParsedFile[],
+  sourceFilePath?: string,
+): string | undefined {
+  const sourceDir = sourceFilePath ? path.dirname(sourceFilePath) : undefined;
   for (const file of files) {
+    if (sourceDir && path.dirname(file.filePath) !== sourceDir) continue;
     const variables = file.json.variable;
     if (!variables) continue;
     const block = variables[name];
@@ -133,8 +141,14 @@ function resolveVariableDefault(name: string, files: ParsedFile[]): string | und
   return undefined;
 }
 
-function resolveLocal(name: string, files: ParsedFile[]): string | undefined {
+function resolveLocal(
+  name: string,
+  files: ParsedFile[],
+  sourceFilePath?: string,
+): string | undefined {
+  const sourceDir = sourceFilePath ? path.dirname(sourceFilePath) : undefined;
   for (const file of files) {
+    if (sourceDir && path.dirname(file.filePath) !== sourceDir) continue;
     const localsBlocks = file.json.locals;
     if (!Array.isArray(localsBlocks)) continue;
     for (const block of localsBlocks) {

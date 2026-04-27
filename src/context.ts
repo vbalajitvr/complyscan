@@ -26,13 +26,14 @@ export function buildScanContext(files: ParsedFile[]): ScanContext {
   context.bedrockLoggingDetected = true;
 
   for (const config of loggingConfigs) {
-    extractBucket(config.body, 'logging_config.s3_config.bucket_name', files, context);
-    extractGroup(config.body, 'logging_config.cloudwatch_config.log_group_name', files, context);
+    extractBucket(config.body, 'logging_config.s3_config.bucket_name', files, context, config.filePath);
+    extractGroup(config.body, 'logging_config.cloudwatch_config.log_group_name', files, context, config.filePath);
     extractBucket(
       config.body,
       'logging_config.cloudwatch_config.large_data_delivery_s3_config.bucket_name',
       files,
       context,
+      config.filePath,
     );
   }
 
@@ -49,10 +50,11 @@ function extractBucket(
   path: string,
   files: ParsedFile[],
   context: ScanContext,
+  sourceFilePath?: string,
 ): void {
   const ref = getNestedValue(body, path);
   if (ref === undefined) return;
-  const result = resolveExpression(ref, files, path);
+  const result = resolveExpression(ref, files, path, sourceFilePath);
   if (!result) return;
   if (result.kind === 'literal' || result.kind === 'address') {
     context.logBucketNames.push(result.value);
@@ -70,10 +72,11 @@ function extractGroup(
   path: string,
   files: ParsedFile[],
   context: ScanContext,
+  sourceFilePath?: string,
 ): void {
   const ref = getNestedValue(body, path);
   if (ref === undefined) return;
-  const result = resolveExpression(ref, files, path);
+  const result = resolveExpression(ref, files, path, sourceFilePath);
   if (!result) return;
   if (result.kind === 'literal' || result.kind === 'address') {
     context.logGroupNames.push(result.value);

@@ -87,6 +87,38 @@ describeIf('CLI e2e', () => {
     expect(result.exitCode).toBe(0);
   });
 
+  it('usage-no-logging: Bedrock resources without invocation logging should FAIL S-12.1.1', () => {
+    const result = runCli(`${combosDir}/usage-no-logging --format json`);
+    expect(result.exitCode).toBe(1);
+    const parsed = JSON.parse(result.stdout);
+    const finding = parsed.findings.find(
+      (f: { ruleId: string; status: string }) => f.ruleId === 'S-12.1.1',
+    );
+    expect(finding?.status).toBe('FAIL');
+    expect(finding?.description).toMatch(/aws_bedrockagent_agent|aws_bedrock_guardrail/);
+  });
+
+  it('no-usage-no-logging: no Bedrock anywhere should SKIP S-12.1.1 (exit 0)', () => {
+    const result = runCli(`${combosDir}/no-usage-no-logging --format json`);
+    const parsed = JSON.parse(result.stdout);
+    const finding = parsed.findings.find(
+      (f: { ruleId: string; status: string }) => f.ruleId === 'S-12.1.1',
+    );
+    expect(finding?.status).toBe('SKIP');
+    expect(result.exitCode).toBe(0);
+  });
+
+  it('usage-logging-all-disabled: all modality toggles false should FAIL S-12.1.1', () => {
+    const result = runCli(`${combosDir}/usage-logging-all-disabled --format json`);
+    expect(result.exitCode).toBe(1);
+    const parsed = JSON.parse(result.stdout);
+    const finding = parsed.findings.find(
+      (f: { ruleId: string; status: string }) => f.ruleId === 'S-12.1.1',
+    );
+    expect(finding?.status).toBe('FAIL');
+    expect(finding?.description).toMatch(/all data-delivery toggles/i);
+  });
+
   it('regression: large-data bucket with no lifecycle should fail S-12.1.2b', () => {
     const result = runCli(
       `${fixturesDir}/non-compliant/cw-large-data-missing-lifecycle --format json`,
@@ -98,6 +130,44 @@ describeIf('CLI e2e', () => {
         f.ruleId === 'S-12.1.2b' && f.status === 'FAIL',
     );
     expect(lifecycleFinding).toBeDefined();
+  });
+
+  describe('module handling', () => {
+    const moduleAuditDir = path.resolve(__dirname, '../fixtures/module-audit');
+
+    it('local-module-logging-inside: resources in local module are fully scanned (exit 0)', () => {
+      const result = runCli(`${moduleAuditDir}/local-module-logging-inside --format json`);
+      expect(result.exitCode).toBe(0);
+      const parsed = JSON.parse(result.stdout);
+      const bedrockFinding = parsed.findings.find(
+        (f: { ruleId: string }) => f.ruleId === 'S-12.1.1',
+      );
+      expect(bedrockFinding?.status).toBe('PASS');
+    });
+
+    it('remote-module-invisible: S-12.1.1 INCONCLUSIVE and S-12.x.5 INCONCLUSIVE (exit 1)', () => {
+      const result = runCli(`${moduleAuditDir}/remote-module-invisible --format json`);
+      expect(result.exitCode).toBe(1);
+      const parsed = JSON.parse(result.stdout);
+
+      const s1 = parsed.findings.find((f: { ruleId: string }) => f.ruleId === 'S-12.1.1');
+      expect(s1?.status).toBe('INCONCLUSIVE');
+
+      const s5 = parsed.findings.find((f: { ruleId: string }) => f.ruleId === 'S-12.x.5');
+      expect(s5?.status).toBe('INCONCLUSIVE');
+      expect(s5?.description).toContain('terraform-aws-modules/bedrock/aws');
+    });
+
+    it('var-scope-bleed: child var with no default resolves to INCONCLUSIVE, not parent default', () => {
+      const result = runCli(`${moduleAuditDir}/var-scope-bleed --format json`);
+      const parsed = JSON.parse(result.stdout);
+      const lifecycle = parsed.findings.find(
+        (f: { ruleId: string }) => f.ruleId === 'S-12.1.2b',
+      );
+      // With scope fix: child var.log_bucket has no default → INCONCLUSIVE
+      // Without fix it would resolve to "parent-log-bucket" and FAIL
+      expect(lifecycle?.status).toBe('INCONCLUSIVE');
+    });
   });
 
   describe('INCONCLUSIVE behaviour', () => {

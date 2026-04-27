@@ -58,5 +58,6 @@ export interface HCL2JSONOutput {
   data?: Record<string, Record<string, Record<string, unknown>[]>>;
   variable?: Record<string, Record<string, unknown>[]>;
   locals?: Record<string, unknown>[];
+  module?: Record<string, Array<Record<string, unknown>>>;
   [key: string]: unknown;
 }

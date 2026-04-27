@@ -2,7 +2,7 @@ import { Command } from 'commander';
 import * as path from 'path';
 import * as fs from 'fs';
 import { ensureHcl2Json } from './utils/hcl2json-check';
-import { collectTfFiles, parseTfFile } from './parser';
+import { parseAllTfFiles } from './parser';
 import { runScan } from './runner';
 import { formatTerminal, formatJson } from './formatter';
 
@@ -29,15 +29,12 @@ program
       process.exit(2);
     }
 
-    // Collect .tf files
-    const tfFiles = collectTfFiles(dir);
-    if (tfFiles.length === 0) {
+    // Collect and parse all .tf files
+    const parsedFiles = parseAllTfFiles(dir);
+    if (parsedFiles.length === 0) {
       console.log('No .tf files found in the specified directory.');
       process.exit(0);
     }
-
-    // Parse all files
-    const parsedFiles = tfFiles.map((f) => parseTfFile(f));
 
     // Run scan
     const findings = runScan(parsedFiles);

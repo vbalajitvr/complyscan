@@ -143,6 +143,35 @@ export function matchesBucket(
 }
 
 /**
+ * Detect module blocks whose source is a remote registry or git URL rather than
+ * a local relative path (./... or ../...).
+ *
+ * Resources inside remote modules are never on disk during a source-only scan,
+ * so complyscan cannot verify their compliance. Callers should emit INCONCLUSIVE.
+ */
+export function findRemoteModules(
+  files: ParsedFile[],
+): Array<{ name: string; source: string; filePath: string }> {
+  const results: Array<{ name: string; source: string; filePath: string }> = [];
+
+  for (const file of files) {
+    const moduleBlocks = file.json.module;
+    if (!moduleBlocks) continue;
+
+    for (const [name, bodies] of Object.entries(moduleBlocks)) {
+      const body = Array.isArray(bodies) ? bodies[0] : bodies;
+      const source = (body as Record<string, unknown>)?.source;
+      if (typeof source !== 'string') continue;
+      if (!source.startsWith('./') && !source.startsWith('../')) {
+        results.push({ name, source, filePath: file.filePath });
+      }
+    }
+  }
+
+  return results;
+}
+
+/**
  * Find the approximate line number of a resource definition in raw HCL.
  */
 export function findResourceLine(rawHcl: string, resourceType: string, resourceName: string): number | undefined {

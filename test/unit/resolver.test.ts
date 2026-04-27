@@ -150,6 +150,71 @@ describe('resolveExpression', () => {
     });
   });
 
+  describe('module-scoped variable resolution', () => {
+    it('resolves var.X only from files in the same directory as sourceFilePath', () => {
+      const parentFile: ParsedFile = {
+        filePath: '/project/root.tf',
+        json: { variable: { log_bucket: [{ default: 'parent-default' }] } },
+        rawHcl: '',
+      };
+      const childFile: ParsedFile = {
+        filePath: '/project/modules/bedrock/main.tf',
+        json: { variable: { log_bucket: [{ type: 'string' }] } },
+        rawHcl: '',
+      };
+
+      // Without sourceFilePath: leaks parent default into child context (old behaviour)
+      const leaked = resolveExpression('${var.log_bucket}', [parentFile, childFile]);
+      expect(leaked).toEqual({ kind: 'literal', value: 'parent-default' });
+
+      // With sourceFilePath scoped to child dir: child has no default → INCONCLUSIVE
+      const scoped = resolveExpression(
+        '${var.log_bucket}',
+        [parentFile, childFile],
+        'logging_config.s3_config.bucket_name',
+        '/project/modules/bedrock/main.tf',
+      );
+      expect(scoped).toMatchObject({ kind: 'unresolvable', reason: 'var-no-default' });
+    });
+
+    it('resolves var.X from correct module when same-dir file has a default', () => {
+      const childFile: ParsedFile = {
+        filePath: '/project/modules/bedrock/main.tf',
+        json: { variable: { log_bucket: [{ default: 'child-bucket' }] } },
+        rawHcl: '',
+      };
+      const result = resolveExpression(
+        '${var.log_bucket}',
+        [childFile],
+        'field',
+        '/project/modules/bedrock/main.tf',
+      );
+      expect(result).toEqual({ kind: 'literal', value: 'child-bucket' });
+    });
+
+    it('resolves local.X only from files in the same directory as sourceFilePath', () => {
+      const parentFile: ParsedFile = {
+        filePath: '/project/root.tf',
+        json: { locals: [{ log_bucket: 'parent-local-bucket' }] },
+        rawHcl: '',
+      };
+      const childFile: ParsedFile = {
+        filePath: '/project/modules/bedrock/main.tf',
+        json: { locals: [] },
+        rawHcl: '',
+      };
+
+      // Scoped to child dir: child has no matching local → unresolvable
+      const result = resolveExpression(
+        '${local.log_bucket}',
+        [parentFile, childFile],
+        'field',
+        '/project/modules/bedrock/main.tf',
+      );
+      expect(result).toMatchObject({ kind: 'unresolvable', reason: 'local-not-literal' });
+    });
+  });
+
   describe('source field tracking', () => {
     it('preserves sourceField in unresolvable results', () => {
       const result = resolveExpression(

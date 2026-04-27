@@ -3,6 +3,15 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { ParsedFile, HCL2JSONOutput } from './types';
 
+const SKIP_DIRS = new Set([
+  'node_modules',  // JS/TS dependencies (CDK for Terraform)
+  'venv', 'env',   // Python virtualenvs (.venv is caught by the leading-dot check)
+  '__pycache__',   // Python bytecode cache
+  'examples',      // demo configs in shared module repos — not production infra
+  'test', 'tests', // Terraform test fixtures intentionally omit compliance controls
+  'vendor',        // vendored module copies
+]);
+
 /**
  * Recursively collect all .tf files from a directory.
  */
@@ -14,8 +23,7 @@ export function collectTfFiles(dir: string): string[] {
     for (const entry of entries) {
       const fullPath = path.join(currentDir, entry.name);
       if (entry.isDirectory()) {
-        // Skip hidden dirs and .terraform
-        if (entry.name.startsWith('.') || entry.name === 'node_modules') continue;
+        if (entry.name.startsWith('.') || SKIP_DIRS.has(entry.name)) continue;
         walk(fullPath);
       } else if (entry.isFile() && entry.name.endsWith('.tf')) {
         results.push(fullPath);

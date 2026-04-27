@@ -7,7 +7,7 @@ describe('runScan', () => {
     const files = [makeParsedFile({})];
     const findings = runScan(files);
 
-    // With no resources: S-12.1.1 WARN, S-12.x.4 FAIL, others SKIP (no bedrock logging)
+    // With no resources: S-12.1.1 SKIP (no Bedrock usage), S-12.x.4 FAIL, others SKIP
     expect(findings.length).toBeGreaterThan(0);
 
     const ruleIds = findings.map((f) => f.ruleId);
