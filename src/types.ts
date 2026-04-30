@@ -45,6 +45,12 @@ export interface ScanContext {
   logGroupNames: string[];
   unresolvedBucketRefs: UnresolvedRef[];
   unresolvedGroupRefs: UnresolvedRef[];
+  // When false (default), S-12.1.1 returns INCONCLUSIVE for "Bedrock used but no
+  // logging config in scanned files" — most enterprises put the logging config
+  // in a separate account-baseline stack and a hard FAIL is wrong. When true,
+  // the scanner is told the entire infra estate is in scope and missing logging
+  // is a real FAIL.
+  strictAccountLogging: boolean;
 }
 
 export interface ParsedFile {

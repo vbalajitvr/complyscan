@@ -66,6 +66,18 @@ describeIf('parser (integration)', () => {
     expect(cwConfig?.['large_data_delivery_s3_config']).toBeDefined();
   });
 
+  it('collects .tf.json files alongside .tf and parses them as JSON without invoking hcl2json', () => {
+    const jsonDir = path.join(combosDir, 'json-format');
+    const files = collectTfFiles(jsonDir);
+    expect(files.length).toBe(1);
+    expect(files[0].endsWith('.tf.json')).toBe(true);
+
+    const parsed = parseTfFile(files[0]);
+    expect(parsed.json.resource).toBeDefined();
+    expect(parsed.json.resource?.aws_bedrockagent_agent).toBeDefined();
+    expect(parsed.json.resource?.aws_bedrock_model_invocation_logging_configuration).toBeDefined();
+  });
+
   it('combo 5: parses all three configs (cloudwatch + s3 + large-data) in one resource', () => {
     const files = collectTfFiles(path.join(combosDir, 'cw-s3-large-data'));
     expect(files.length).toBeGreaterThan(0);

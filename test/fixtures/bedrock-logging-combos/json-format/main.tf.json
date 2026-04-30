@@ -1,0 +1,67 @@
+{
+  "resource": {
+    "aws_bedrockagent_agent": {
+      "json_agent": {
+        "agent_name": "json-agent",
+        "agent_resource_role_arn": "arn:aws:iam::123456789012:role/bedrock-agent",
+        "foundation_model": "anthropic.claude-3-sonnet-20240229-v1:0",
+        "instruction": "JSON-formatted Terraform fixture."
+      }
+    },
+    "aws_bedrock_model_invocation_logging_configuration": {
+      "main": {
+        "logging_config": {
+          "text_data_delivery_enabled": true,
+          "embedding_data_delivery_enabled": true,
+          "image_data_delivery_enabled": true,
+          "video_data_delivery_enabled": true,
+          "s3_config": {
+            "bucket_name": "json-bedrock-logs"
+          }
+        }
+      }
+    },
+    "aws_s3_bucket": {
+      "logs": {
+        "bucket": "json-bedrock-logs"
+      }
+    },
+    "aws_s3_bucket_versioning": {
+      "logs": {
+        "bucket": "json-bedrock-logs",
+        "versioning_configuration": {
+          "status": "Enabled"
+        }
+      }
+    },
+    "aws_s3_bucket_server_side_encryption_configuration": {
+      "logs": {
+        "bucket": "json-bedrock-logs",
+        "rule": {
+          "apply_server_side_encryption_by_default": {
+            "sse_algorithm": "aws:kms"
+          }
+        }
+      }
+    },
+    "aws_s3_bucket_lifecycle_configuration": {
+      "logs": {
+        "bucket": "json-bedrock-logs",
+        "rule": {
+          "id": "retain-logs",
+          "status": "Enabled",
+          "expiration": {
+            "days": 365
+          }
+        }
+      }
+    },
+    "aws_cloudtrail": {
+      "main": {
+        "name": "json-audit-trail",
+        "s3_bucket_name": "json-bedrock-logs",
+        "enable_logging": true
+      }
+    }
+  }
+}

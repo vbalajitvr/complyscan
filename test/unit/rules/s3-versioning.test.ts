@@ -1,11 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { s3EncryptionRule } from '../../../src/rules/s-12-x-2a-s3-encryption';
+import { s3VersioningRule } from '../../../src/rules/s3-versioning';
 import { makeParsedFile, emptyContext, bedrockContext } from './helpers';
 
-describe('S-12.x.2a S3 Encryption', () => {
+describe('S-12.x.1 S3 Versioning', () => {
   it('should SKIP when no Bedrock logging detected', () => {
     const files = [makeParsedFile({})];
-    const findings = s3EncryptionRule.run(files, emptyContext());
+    const findings = s3VersioningRule.run(files, emptyContext());
 
     expect(findings).toHaveLength(1);
     expect(findings[0].status).toBe('SKIP');
@@ -14,94 +14,76 @@ describe('S-12.x.2a S3 Encryption', () => {
   it('should SKIP when Bedrock logging has no S3 buckets', () => {
     const ctx = bedrockContext({ bucketNames: [] });
     const files = [makeParsedFile({})];
-    const findings = s3EncryptionRule.run(files, ctx);
+    const findings = s3VersioningRule.run(files, ctx);
 
     expect(findings).toHaveLength(1);
     expect(findings[0].status).toBe('SKIP');
   });
 
-  it('should FAIL when no encryption config found', () => {
+  it('should FAIL when no versioning or object lock configured', () => {
     const ctx = bedrockContext();
     const files = [makeParsedFile({})];
-    const findings = s3EncryptionRule.run(files, ctx);
+    const findings = s3VersioningRule.run(files, ctx);
 
     expect(findings).toHaveLength(1);
     expect(findings[0].status).toBe('FAIL');
   });
 
-  it('should PASS when using aws:kms encryption', () => {
+  it('should PASS when versioning is enabled', () => {
     const ctx = bedrockContext();
     const files = [
       makeParsedFile({
-        aws_s3_bucket_server_side_encryption_configuration: {
+        aws_s3_bucket_versioning: {
           logs: [
             {
               bucket: 'my-ai-log-bucket',
-              rule: [
-                {
-                  apply_server_side_encryption_by_default: [
-                    { sse_algorithm: 'aws:kms' },
-                  ],
-                },
-              ],
+              versioning_configuration: [{ status: 'Enabled' }],
             },
           ],
         },
       }),
     ];
-    const findings = s3EncryptionRule.run(files, ctx);
+    const findings = s3VersioningRule.run(files, ctx);
 
     expect(findings).toHaveLength(1);
     expect(findings[0].status).toBe('PASS');
   });
 
-  it('should PASS when using aws:kms:dsse encryption', () => {
+  it('should PASS when object lock is configured', () => {
     const ctx = bedrockContext();
     const files = [
       makeParsedFile({
-        aws_s3_bucket_server_side_encryption_configuration: {
+        aws_s3_bucket_object_lock_configuration: {
           logs: [
             {
               bucket: 'my-ai-log-bucket',
-              rule: [
-                {
-                  apply_server_side_encryption_by_default: [
-                    { sse_algorithm: 'aws:kms:dsse' },
-                  ],
-                },
-              ],
+              rule: [{ default_retention: [{ mode: 'COMPLIANCE', days: 365 }] }],
             },
           ],
         },
       }),
     ];
-    const findings = s3EncryptionRule.run(files, ctx);
+    const findings = s3VersioningRule.run(files, ctx);
 
     expect(findings).toHaveLength(1);
     expect(findings[0].status).toBe('PASS');
   });
 
-  it('should FAIL when using AES256 encryption', () => {
+  it('should FAIL when versioning status is not Enabled', () => {
     const ctx = bedrockContext();
     const files = [
       makeParsedFile({
-        aws_s3_bucket_server_side_encryption_configuration: {
+        aws_s3_bucket_versioning: {
           logs: [
             {
               bucket: 'my-ai-log-bucket',
-              rule: [
-                {
-                  apply_server_side_encryption_by_default: [
-                    { sse_algorithm: 'AES256' },
-                  ],
-                },
-              ],
+              versioning_configuration: [{ status: 'Suspended' }],
             },
           ],
         },
       }),
     ];
-    const findings = s3EncryptionRule.run(files, ctx);
+    const findings = s3VersioningRule.run(files, ctx);
 
     expect(findings).toHaveLength(1);
     expect(findings[0].status).toBe('FAIL');

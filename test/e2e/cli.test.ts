@@ -87,15 +87,26 @@ describeIf('CLI e2e', () => {
     expect(result.exitCode).toBe(0);
   });
 
-  it('usage-no-logging: Bedrock resources without invocation logging should FAIL S-12.1.1', () => {
+  it('usage-no-logging (default permissive): Bedrock resources without invocation logging should be INCONCLUSIVE', () => {
     const result = runCli(`${combosDir}/usage-no-logging --format json`);
+    expect(result.exitCode).toBe(1); // INCONCLUSIVE blocks in default strict mode
+    const parsed = JSON.parse(result.stdout);
+    const finding = parsed.findings.find(
+      (f: { ruleId: string; status: string }) => f.ruleId === 'S-12.1.1',
+    );
+    expect(finding?.status).toBe('INCONCLUSIVE');
+    expect(finding?.description).toMatch(/aws_bedrockagent_agent|aws_bedrock_guardrail/);
+  });
+
+  it('usage-no-logging --strict-account-logging: should FAIL S-12.1.1', () => {
+    const result = runCli(`${combosDir}/usage-no-logging --strict-account-logging --format json`);
     expect(result.exitCode).toBe(1);
     const parsed = JSON.parse(result.stdout);
     const finding = parsed.findings.find(
       (f: { ruleId: string; status: string }) => f.ruleId === 'S-12.1.1',
     );
     expect(finding?.status).toBe('FAIL');
-    expect(finding?.description).toMatch(/aws_bedrockagent_agent|aws_bedrock_guardrail/);
+    expect(finding?.description).toMatch(/Strict account-logging mode/);
   });
 
   it('no-usage-no-logging: no Bedrock anywhere should SKIP S-12.1.1 (exit 0)', () => {
@@ -106,6 +117,128 @@ describeIf('CLI e2e', () => {
     );
     expect(finding?.status).toBe('SKIP');
     expect(result.exitCode).toBe(0);
+  });
+
+  describe('Fix 1 / Fix 3 / Fix 4 e2e fixtures', () => {
+    it('iam-only-no-logging: IAM grant only → INCONCLUSIVE (Fix 3a)', () => {
+      const result = runCli(`${combosDir}/iam-only-no-logging --format json`);
+      const parsed = JSON.parse(result.stdout);
+      const finding = parsed.findings.find(
+        (f: { ruleId: string }) => f.ruleId === 'S-12.1.1',
+      );
+      expect(finding?.status).toBe('INCONCLUSIVE');
+      expect(finding?.description).toMatch(/IAM grant/);
+      expect(finding?.description).toContain('bedrock:InvokeModel');
+    });
+
+    it('iam-policy-document-only: data source policy with bedrock action → INCONCLUSIVE', () => {
+      const result = runCli(`${combosDir}/iam-policy-document-only --format json`);
+      const parsed = JSON.parse(result.stdout);
+      const finding = parsed.findings.find(
+        (f: { ruleId: string }) => f.ruleId === 'S-12.1.1',
+      );
+      expect(finding?.status).toBe('INCONCLUSIVE');
+      expect(finding?.description).toContain('data.aws_iam_policy_document.bedrock_converse');
+    });
+
+    it('vpc-endpoint-only: VPC endpoint to bedrock-runtime → INCONCLUSIVE (Fix 3b)', () => {
+      const result = runCli(`${combosDir}/vpc-endpoint-only --format json`);
+      const parsed = JSON.parse(result.stdout);
+      const finding = parsed.findings.find(
+        (f: { ruleId: string }) => f.ruleId === 'S-12.1.1',
+      );
+      expect(finding?.status).toBe('INCONCLUSIVE');
+      expect(finding?.description).toContain('aws_vpc_endpoint.bedrock');
+      expect(finding?.description).toContain('bedrock-runtime');
+    });
+
+    it('data-source-only: aws_bedrock_foundation_model data source → INCONCLUSIVE (Fix 3c)', () => {
+      const result = runCli(`${combosDir}/data-source-only --format json`);
+      const parsed = JSON.parse(result.stdout);
+      const finding = parsed.findings.find(
+        (f: { ruleId: string }) => f.ruleId === 'S-12.1.1',
+      );
+      expect(finding?.status).toBe('INCONCLUSIVE');
+      expect(finding?.description).toContain('data.aws_bedrock_foundation_model.claude');
+    });
+
+    it('json-format: .tf.json fixture is parsed and S-12.1.1 PASSES (Fix 1)', () => {
+      const result = runCli(`${combosDir}/json-format --format json`);
+      const parsed = JSON.parse(result.stdout);
+      const finding = parsed.findings.find(
+        (f: { ruleId: string }) => f.ruleId === 'S-12.1.1',
+      );
+      expect(finding?.status).toBe('PASS');
+    });
+
+    it('strict-mode-fail (default): direct usage no logging → INCONCLUSIVE', () => {
+      const result = runCli(`${combosDir}/strict-mode-fail --format json`);
+      const parsed = JSON.parse(result.stdout);
+      const finding = parsed.findings.find(
+        (f: { ruleId: string }) => f.ruleId === 'S-12.1.1',
+      );
+      expect(finding?.status).toBe('INCONCLUSIVE');
+    });
+
+    it('strict-mode-fail --strict-account-logging: direct usage no logging → FAIL', () => {
+      const result = runCli(`${combosDir}/strict-mode-fail --strict-account-logging --format json`);
+      const parsed = JSON.parse(result.stdout);
+      const finding = parsed.findings.find(
+        (f: { ruleId: string }) => f.ruleId === 'S-12.1.1',
+      );
+      expect(finding?.status).toBe('FAIL');
+      expect(finding?.description).toMatch(/Strict account-logging mode/);
+    });
+
+    it('remote-module-bedrock-logging: remote bedrock-named module → INCONCLUSIVE (Fix 4 path 1)', () => {
+      const result = runCli(`${combosDir}/remote-module-bedrock-logging --format json`);
+      const parsed = JSON.parse(result.stdout);
+      const finding = parsed.findings.find(
+        (f: { ruleId: string }) => f.ruleId === 'S-12.1.1',
+      );
+      expect(finding?.status).toBe('INCONCLUSIVE');
+      expect(finding?.description).toContain('bedrock_logging');
+      expect(finding?.description).toContain('log_bucket');
+    });
+
+    it('remote-module-bedrock-logging --strict-account-logging: hint still wins → INCONCLUSIVE', () => {
+      const result = runCli(
+        `${combosDir}/remote-module-bedrock-logging --strict-account-logging --format json`,
+      );
+      const parsed = JSON.parse(result.stdout);
+      const finding = parsed.findings.find(
+        (f: { ruleId: string }) => f.ruleId === 'S-12.1.1',
+      );
+      expect(finding?.status).toBe('INCONCLUSIVE');
+    });
+
+    it('cross-stack-baseline-logging: terraform_remote_state reference → INCONCLUSIVE (Fix 4 path 2)', () => {
+      const result = runCli(`${combosDir}/cross-stack-baseline-logging --format json`);
+      const parsed = JSON.parse(result.stdout);
+      const finding = parsed.findings.find(
+        (f: { ruleId: string }) => f.ruleId === 'S-12.1.1',
+      );
+      expect(finding?.status).toBe('INCONCLUSIVE');
+      expect(finding?.description).toContain('account_baseline');
+    });
+
+    it('bedrock-named-local-module: PASS (regression guard — local module logging is found)', () => {
+      const result = runCli(`${combosDir}/bedrock-named-local-module --format json`);
+      const parsed = JSON.parse(result.stdout);
+      const finding = parsed.findings.find(
+        (f: { ruleId: string }) => f.ruleId === 'S-12.1.1',
+      );
+      expect(finding?.status).toBe('PASS');
+    });
+
+    it('expanded-resource-types: new Bedrock types in finite list are detected → PASS (Fix 2)', () => {
+      const result = runCli(`${combosDir}/expanded-resource-types --format json`);
+      const parsed = JSON.parse(result.stdout);
+      const finding = parsed.findings.find(
+        (f: { ruleId: string }) => f.ruleId === 'S-12.1.1',
+      );
+      expect(finding?.status).toBe('PASS');
+    });
   });
 
   it('usage-logging-all-disabled: all modality toggles false should FAIL S-12.1.1', () => {

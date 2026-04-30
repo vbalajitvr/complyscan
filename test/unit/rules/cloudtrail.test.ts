@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { cloudtrailRule } from '../../../src/rules/s-12-x-4-cloudtrail';
+import { cloudtrailRule } from '../../../src/rules/cloudtrail';
 import { makeParsedFile, emptyContext } from './helpers';
 
 describe('S-12.x.4 CloudTrail', () => {

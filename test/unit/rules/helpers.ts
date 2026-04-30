@@ -12,13 +12,14 @@ export function makeParsedFile(
   return { filePath, json, rawHcl };
 }
 
-export function emptyContext(): ScanContext {
+export function emptyContext(opts?: { strictAccountLogging?: boolean }): ScanContext {
   return {
     bedrockLoggingDetected: false,
     logBucketNames: [],
     logGroupNames: [],
     unresolvedBucketRefs: [],
     unresolvedGroupRefs: [],
+    strictAccountLogging: opts?.strictAccountLogging ?? false,
   };
 }
 
@@ -27,6 +28,7 @@ export function bedrockContext(opts?: {
   groupNames?: string[];
   unresolvedBucketRefs?: ScanContext['unresolvedBucketRefs'];
   unresolvedGroupRefs?: ScanContext['unresolvedGroupRefs'];
+  strictAccountLogging?: boolean;
 }): ScanContext {
   return {
     bedrockLoggingDetected: true,
@@ -34,5 +36,6 @@ export function bedrockContext(opts?: {
     logGroupNames: opts?.groupNames ?? ['/aws/bedrock/invocation-logs'],
     unresolvedBucketRefs: opts?.unresolvedBucketRefs ?? [],
     unresolvedGroupRefs: opts?.unresolvedGroupRefs ?? [],
+    strictAccountLogging: opts?.strictAccountLogging ?? false,
   };
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { cwRetentionRule } from '../../../src/rules/s-12-1-2a-cw-retention';
+import { cwRetentionRule } from '../../../src/rules/cw-retention';
 import { makeParsedFile, emptyContext, bedrockContext } from './helpers';
 
 describe('S-12.1.2a CloudWatch Retention', () => {

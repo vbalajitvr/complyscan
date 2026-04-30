@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { s3LifecycleRule } from '../../../src/rules/s-12-1-2b-s3-lifecycle';
+import { s3LifecycleRule } from '../../../src/rules/s3-lifecycle';
 import { makeParsedFile, emptyContext, bedrockContext } from './helpers';
 
 describe('S-12.1.2b S3 Lifecycle Retention', () => {

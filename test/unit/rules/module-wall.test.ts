@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { remoteModuleWallRule } from '../../../src/rules/s-12-x-5-module-wall';
+import { remoteModuleWallRule } from '../../../src/rules/module-wall';
 import { emptyContext } from './helpers';
 import { ParsedFile } from '../../../src/types';
 

@@ -13,7 +13,11 @@ const SKIP_DIRS = new Set([
 ]);
 
 /**
- * Recursively collect all .tf files from a directory.
+ * Recursively collect Terraform config files (.tf and .tf.json) from a directory.
+ *
+ * Terraform supports two on-disk syntaxes for the same configuration: HCL (.tf)
+ * and JSON (.tf.json). cdktf, terragrunt, and various code generators emit the
+ * JSON form, so a scanner that ignored .tf.json would be blind to those repos.
  */
 export function collectTfFiles(dir: string): string[] {
   const results: string[] = [];
@@ -25,7 +29,7 @@ export function collectTfFiles(dir: string): string[] {
       if (entry.isDirectory()) {
         if (entry.name.startsWith('.') || SKIP_DIRS.has(entry.name)) continue;
         walk(fullPath);
-      } else if (entry.isFile() && entry.name.endsWith('.tf')) {
+      } else if (entry.isFile() && (entry.name.endsWith('.tf') || entry.name.endsWith('.tf.json'))) {
         results.push(fullPath);
       }
     }
@@ -36,24 +40,29 @@ export function collectTfFiles(dir: string): string[] {
 }
 
 /**
- * Parse a single .tf file using hcl2json.
+ * Parse a single Terraform config file. .tf is converted via hcl2json;
+ * .tf.json is parsed as JSON directly. Both yield the same HCL2JSONOutput shape.
  */
 export function parseTfFile(filePath: string): ParsedFile {
   const rawHcl = fs.readFileSync(filePath, 'utf-8');
 
-  const stdout = execSync(`hcl2json <<< '${rawHcl.replace(/'/g, "'\\''")}'`, {
-    encoding: 'utf-8',
-    stdio: ['pipe', 'pipe', 'pipe'],
-    shell: '/bin/bash',
-  });
-
-  const json: HCL2JSONOutput = JSON.parse(stdout);
+  let json: HCL2JSONOutput;
+  if (filePath.endsWith('.tf.json')) {
+    json = JSON.parse(rawHcl);
+  } else {
+    const stdout = execSync(`hcl2json <<< '${rawHcl.replace(/'/g, "'\\''")}'`, {
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      shell: '/bin/bash',
+    });
+    json = JSON.parse(stdout);
+  }
 
   return { filePath, json, rawHcl };
 }
 
 /**
- * Parse all .tf files from a directory.
+ * Parse all .tf and .tf.json files from a directory.
  */
 export function parseAllTfFiles(dir: string): ParsedFile[] {
   const tfFiles = collectTfFiles(dir);

@@ -18,7 +18,15 @@ program
     '--no-strict',
     'Treat INCONCLUSIVE findings as non-blocking (do not affect exit code). Default is strict: INCONCLUSIVE blocks like FAIL/WARN.',
   )
-  .action((directory: string, options: { format: string; strict: boolean }) => {
+  .option(
+    '--strict-account-logging',
+    'Treat missing Bedrock invocation logging as FAIL even when no in-repo evidence is present. Default is INCONCLUSIVE — most enterprises put the logging config in a separate account-baseline stack.',
+    false,
+  )
+  .action((
+    directory: string,
+    options: { format: string; strict: boolean; strictAccountLogging: boolean },
+  ) => {
     // Check hcl2json is installed
     ensureHcl2Json();
 
@@ -29,7 +37,7 @@ program
       process.exit(2);
     }
 
-    // Collect and parse all .tf files
+    // Collect and parse all .tf and .tf.json files
     const parsedFiles = parseAllTfFiles(dir);
     if (parsedFiles.length === 0) {
       console.log('No .tf files found in the specified directory.');
@@ -37,7 +45,9 @@ program
     }
 
     // Run scan
-    const findings = runScan(parsedFiles);
+    const findings = runScan(parsedFiles, {
+      strictAccountLogging: options.strictAccountLogging,
+    });
 
     // Format output
     if (options.format === 'json') {

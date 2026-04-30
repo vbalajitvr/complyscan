@@ -11,13 +11,18 @@ import { resolveExpression } from './resolver';
  * populate unresolvedBucketRefs / unresolvedGroupRefs so dependent rules can emit
  * INCONCLUSIVE findings instead of silently skipping.
  */
-export function buildScanContext(files: ParsedFile[]): ScanContext {
+export interface BuildContextOptions {
+  strictAccountLogging?: boolean;
+}
+
+export function buildScanContext(files: ParsedFile[], options: BuildContextOptions = {}): ScanContext {
   const context: ScanContext = {
     bedrockLoggingDetected: false,
     logBucketNames: [],
     logGroupNames: [],
     unresolvedBucketRefs: [],
     unresolvedGroupRefs: [],
+    strictAccountLogging: options.strictAccountLogging ?? false,
   };
 
   const loggingConfigs = findResources(files, 'aws_bedrock_model_invocation_logging_configuration');

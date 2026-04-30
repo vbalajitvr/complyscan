@@ -189,3 +189,529 @@ export function findResourceLine(rawHcl: string, resourceType: string, resourceN
 function escapeRegex(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
+
+// ---------------------------------------------------------------------------
+// Bedrock detection — finite lists, no regex.
+//
+// All Bedrock-related detection uses explicit string lists. New AWS resource
+// types, IAM actions, and VPC service names are added by appending to a list,
+// not by tweaking a regex. This makes additions reviewable in a one-line diff
+// and prevents accidental over-matching.
+// ---------------------------------------------------------------------------
+
+/**
+ * Direct Bedrock infrastructure resource types — declaring any of these in
+ * Terraform deploys Bedrock infra.
+ *
+ * Excludes aws_bedrock_model_invocation_logging_configuration: that is the
+ * LOGGING config tracked separately in context.ts.
+ *
+ * Update this list when AWS provider releases new Bedrock resource types.
+ * Source: https://registry.terraform.io/providers/hashicorp/aws/latest/docs
+ */
+export const BEDROCK_DIRECT_RESOURCE_TYPES: readonly string[] = [
+  // Foundation / model lifecycle
+  'aws_bedrock_custom_model',
+  'aws_bedrock_guardrail',
+  'aws_bedrock_guardrail_version',
+  'aws_bedrock_inference_profile',
+  'aws_bedrock_marketplace_model_endpoint',
+  'aws_bedrock_provisioned_model_throughput',
+  // Bedrock Agents
+  'aws_bedrockagent_agent',
+  'aws_bedrockagent_agent_action_group',
+  'aws_bedrockagent_agent_alias',
+  'aws_bedrockagent_agent_collaborator',
+  'aws_bedrockagent_agent_knowledge_base_association',
+  'aws_bedrockagent_data_source',
+  'aws_bedrockagent_flow',
+  'aws_bedrockagent_knowledge_base',
+  'aws_bedrockagent_prompt',
+  'aws_bedrockagent_prompt_version',
+] as const;
+
+/**
+ * Read-only Bedrock data sources. Their presence indicates *intent* to use
+ * Bedrock at runtime even when no aws_bedrock_* resource is declared
+ * (e.g. a Lambda passes data.aws_bedrock_foundation_model.claude.id as an env var).
+ */
+export const BEDROCK_DATA_SOURCE_TYPES: readonly string[] = [
+  'aws_bedrock_foundation_model',
+  'aws_bedrock_foundation_models',
+  'aws_bedrock_inference_profile',
+  'aws_bedrock_inference_profiles',
+] as const;
+
+/**
+ * Inline IAM policy resource types whose `policy` attribute is a JSON string.
+ * Walked by findIamBedrockGrants to detect SDK-driven Bedrock usage.
+ */
+const INLINE_IAM_POLICY_RESOURCE_TYPES = [
+  'aws_iam_policy',
+  'aws_iam_role_policy',
+  'aws_iam_user_policy',
+  'aws_iam_group_policy',
+] as const;
+
+/**
+ * IAM action strings that grant Bedrock access. Exact-string match against
+ * `actions` (or `action`) entries in IAM policy documents and inline JSON
+ * policies. The wildcard `bedrock:*` is included as a literal so we never
+ * have to interpret patterns.
+ *
+ * Update when AWS adds new Bedrock IAM actions.
+ */
+export const BEDROCK_IAM_ACTIONS: readonly string[] = [
+  'bedrock:Converse',
+  'bedrock:ConverseStream',
+  'bedrock:CreateModelInvocationJob',
+  'bedrock:GetAsyncInvoke',
+  'bedrock:InvokeAgent',
+  'bedrock:InvokeFlow',
+  'bedrock:InvokeInlineAgent',
+  'bedrock:InvokeModel',
+  'bedrock:InvokeModelWithResponseStream',
+  'bedrock:ListAsyncInvokes',
+  'bedrock:Retrieve',
+  'bedrock:RetrieveAndGenerate',
+  'bedrock:StartAsyncInvoke',
+  'bedrock:*',
+] as const;
+
+/**
+ * Trailing tokens for VPC endpoint service_name. The full string is
+ * com.amazonaws.<region>.<service>; we compare on the suffix.
+ */
+export const BEDROCK_VPC_ENDPOINT_SUFFIXES: readonly string[] = [
+  '.bedrock',
+  '.bedrock-agent',
+  '.bedrock-agent-runtime',
+  '.bedrock-runtime',
+] as const;
+
+/**
+ * Argument names commonly used to wire Bedrock-logging destinations through a
+ * module call. Matched as keys (left side) of inputs in module bodies.
+ */
+export const BEDROCK_LOGGING_INPUT_KEYS: readonly string[] = [
+  // Generic logging-destination inputs.
+  'cloudwatch_log_group',
+  'cloudwatch_log_group_arn',
+  'cloudwatch_log_group_name',
+  'log_bucket',
+  'log_bucket_arn',
+  'log_bucket_id',
+  'log_bucket_name',
+  'log_destination',
+  'log_destination_arn',
+  'logging_destination',
+  // Bedrock-specific inputs.
+  'bedrock_log_bucket',
+  'bedrock_log_group',
+  'bedrock_logging_bucket',
+  'bedrock_logging_log_group',
+  'bedrock_logging_role_arn',
+  'embedding_data_delivery_enabled',
+  'image_data_delivery_enabled',
+  'invocation_logging',
+  'model_invocation_logging',
+  'text_data_delivery_enabled',
+  'video_data_delivery_enabled',
+] as const;
+
+/**
+ * Tokens that, when found in a module's local name (the X in `module "X"`),
+ * indicate the module is in the Bedrock / GenAI scope.
+ */
+export const BEDROCK_MODULE_NAME_TOKENS: readonly string[] = [
+  'ai_logging',
+  'bedrock',
+  'gen_ai',
+  'genai',
+  'invocation_logging',
+  'llm',
+  'model_invocation',
+] as const;
+
+/**
+ * Conventional `terraform_remote_state` data-source names whose outputs hold
+ * account-baseline / central-logging configuration.
+ */
+export const BASELINE_REMOTE_STATE_NAMES: readonly string[] = [
+  'account_baseline',
+  'audit',
+  'audit_logging',
+  'baseline',
+  'central_logging',
+  'compliance',
+  'logging',
+  'observability',
+  'org_baseline',
+  'platform',
+  'security',
+  'shared_services',
+] as const;
+
+/**
+ * Find all direct-usage Bedrock resources. Returns a flat list of
+ * `{ resourceAddress, type, name, filePath }`.
+ */
+export function findBedrockResources(
+  files: ParsedFile[],
+): Array<{ resourceAddress: string; type: string; name: string; filePath: string }> {
+  const results: Array<{ resourceAddress: string; type: string; name: string; filePath: string }> = [];
+  for (const type of BEDROCK_DIRECT_RESOURCE_TYPES) {
+    for (const r of findResources(files, type)) {
+      results.push({ resourceAddress: `${type}.${r.name}`, type, name: r.name, filePath: r.filePath });
+    }
+  }
+  return results;
+}
+
+/**
+ * Find all Bedrock data-source references (data "aws_bedrock_foundation_model" "x" {}).
+ */
+export function findBedrockDataSources(
+  files: ParsedFile[],
+): Array<{ dataAddress: string; type: string; name: string; filePath: string }> {
+  const results: Array<{ dataAddress: string; type: string; name: string; filePath: string }> = [];
+  for (const file of files) {
+    const dataBlocks = file.json.data;
+    if (!dataBlocks) continue;
+    for (const type of BEDROCK_DATA_SOURCE_TYPES) {
+      const block = dataBlocks[type];
+      if (!block) continue;
+      for (const name of Object.keys(block)) {
+        results.push({ dataAddress: `data.${type}.${name}`, type, name, filePath: file.filePath });
+      }
+    }
+  }
+  return results;
+}
+
+/**
+ * Find IAM policies (data sources or inline) granting Bedrock actions.
+ * Caller treats hits as INDIRECT Bedrock usage (SDK-driven workloads).
+ *
+ * For inline JSON policies that contain unparseable interpolations, returns
+ * nothing for that resource — silent miss is preferable to false signal.
+ */
+export function findIamBedrockGrants(
+  files: ParsedFile[],
+): Array<{ resourceAddress: string; actions: string[]; filePath: string }> {
+  const results: Array<{ resourceAddress: string; actions: string[]; filePath: string }> = [];
+
+  // 1. data "aws_iam_policy_document" blocks
+  for (const file of files) {
+    const docs = file.json.data?.aws_iam_policy_document;
+    if (!docs) continue;
+    for (const [name, bodies] of Object.entries(docs)) {
+      const body = Array.isArray(bodies) ? bodies[0] : bodies;
+      const matched = collectBedrockActionsFromStatementBlocks(body);
+      if (matched.length > 0) {
+        results.push({
+          resourceAddress: `data.aws_iam_policy_document.${name}`,
+          actions: matched,
+          filePath: file.filePath,
+        });
+      }
+    }
+  }
+
+  // 2. Inline policy resources — `policy` attribute is a JSON string.
+  for (const type of INLINE_IAM_POLICY_RESOURCE_TYPES) {
+    for (const r of findResources(files, type)) {
+      const policy = getNestedValue(r.body, 'policy');
+      if (typeof policy !== 'string') continue;
+      const matched = collectBedrockActionsFromJsonPolicy(policy);
+      if (matched.length > 0) {
+        results.push({
+          resourceAddress: `${type}.${r.name}`,
+          actions: matched,
+          filePath: r.filePath,
+        });
+      }
+    }
+  }
+
+  return results;
+}
+
+function collectBedrockActionsFromStatementBlocks(body: unknown): string[] {
+  if (typeof body !== 'object' || body === null) return [];
+  const stmtField = (body as Record<string, unknown>).statement;
+  if (stmtField === undefined) return [];
+
+  const statements: unknown[] = Array.isArray(stmtField) ? stmtField : [stmtField];
+  const matched = new Set<string>();
+
+  for (const stmt of statements) {
+    if (typeof stmt !== 'object' || stmt === null) continue;
+    const actionsField = (stmt as Record<string, unknown>).actions;
+    const actionField = (stmt as Record<string, unknown>).action;
+
+    const candidates: unknown[] = [];
+    if (Array.isArray(actionsField)) candidates.push(...actionsField);
+    else if (actionsField !== undefined) candidates.push(actionsField);
+    if (Array.isArray(actionField)) candidates.push(...actionField);
+    else if (actionField !== undefined) candidates.push(actionField);
+
+    for (const a of candidates) {
+      if (typeof a === 'string' && (BEDROCK_IAM_ACTIONS as readonly string[]).includes(a)) {
+        matched.add(a);
+      }
+    }
+  }
+
+  return [...matched].sort();
+}
+
+function collectBedrockActionsFromJsonPolicy(policyJson: string): string[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(policyJson);
+  } catch {
+    return [];
+  }
+  if (typeof parsed !== 'object' || parsed === null) return [];
+  const stmts = (parsed as Record<string, unknown>).Statement;
+  const statements: unknown[] = Array.isArray(stmts) ? stmts : stmts !== undefined ? [stmts] : [];
+
+  const matched = new Set<string>();
+  for (const stmt of statements) {
+    if (typeof stmt !== 'object' || stmt === null) continue;
+    const actionField = (stmt as Record<string, unknown>).Action;
+    const candidates: unknown[] = Array.isArray(actionField)
+      ? actionField
+      : actionField !== undefined
+        ? [actionField]
+        : [];
+    for (const a of candidates) {
+      if (typeof a === 'string' && (BEDROCK_IAM_ACTIONS as readonly string[]).includes(a)) {
+        matched.add(a);
+      }
+    }
+  }
+  return [...matched].sort();
+}
+
+/**
+ * Find aws_vpc_endpoint resources whose service_name targets a Bedrock service.
+ * If service_name is interpolated (var/local), attempts to resolve it.
+ */
+export function findBedrockVpcEndpoints(
+  files: ParsedFile[],
+): Array<{ resourceAddress: string; serviceName: string; filePath: string }> {
+  const results: Array<{ resourceAddress: string; serviceName: string; filePath: string }> = [];
+
+  for (const r of findResources(files, 'aws_vpc_endpoint')) {
+    const raw = getNestedValue(r.body, 'service_name');
+    if (typeof raw !== 'string') continue;
+
+    let resolved: string | undefined;
+    if (matchesBedrockServiceSuffix(raw)) {
+      resolved = raw;
+    } else {
+      const result = resolveExpression(raw, files, 'service_name', r.filePath);
+      if (result?.kind === 'literal' && matchesBedrockServiceSuffix(result.value)) {
+        resolved = result.value;
+      }
+    }
+    if (resolved !== undefined) {
+      results.push({
+        resourceAddress: `aws_vpc_endpoint.${r.name}`,
+        serviceName: resolved,
+        filePath: r.filePath,
+      });
+    }
+  }
+
+  return results;
+}
+
+function matchesBedrockServiceSuffix(s: string): boolean {
+  for (const suffix of BEDROCK_VPC_ENDPOINT_SUFFIXES) {
+    if (s.endsWith(suffix)) return true;
+  }
+  return false;
+}
+
+/**
+ * Find module calls (local or remote) that look Bedrock-logging-related —
+ * either the local module name contains a Bedrock token, OR the module body
+ * passes one of the BEDROCK_LOGGING_INPUT_KEYS as an input.
+ *
+ * Used by S-12.1.1 to emit INCONCLUSIVE rather than FAIL when Bedrock logging
+ * is plausibly being configured externally to the scanned files.
+ */
+export function findBedrockRelatedModuleCalls(files: ParsedFile[]): Array<{
+  name: string;
+  source: string | undefined;
+  isRemote: boolean;
+  matchedTokens: string[];
+  matchedInputKeys: string[];
+  filePath: string;
+}> {
+  const results: Array<{
+    name: string;
+    source: string | undefined;
+    isRemote: boolean;
+    matchedTokens: string[];
+    matchedInputKeys: string[];
+    filePath: string;
+  }> = [];
+
+  for (const file of files) {
+    const moduleBlocks = file.json.module;
+    if (!moduleBlocks) continue;
+
+    for (const [name, bodies] of Object.entries(moduleBlocks)) {
+      const body = (Array.isArray(bodies) ? bodies[0] : bodies) as Record<string, unknown>;
+      const sourceVal = body?.source;
+      const source = typeof sourceVal === 'string' ? sourceVal : undefined;
+      const isRemote =
+        typeof source === 'string' && !source.startsWith('./') && !source.startsWith('../');
+
+      const matchedTokens = matchModuleNameTokens(name);
+
+      const inputKeys = body ? Object.keys(body) : [];
+      const matchedInputKeys = inputKeys.filter((k) =>
+        (BEDROCK_LOGGING_INPUT_KEYS as readonly string[]).includes(k),
+      );
+
+      if (matchedTokens.length === 0 && matchedInputKeys.length === 0) continue;
+
+      results.push({
+        name,
+        source,
+        isRemote,
+        matchedTokens,
+        matchedInputKeys,
+        filePath: file.filePath,
+      });
+    }
+  }
+
+  return results;
+}
+
+function matchModuleNameTokens(name: string): string[] {
+  const normalized = name.toLowerCase();
+  const matched: string[] = [];
+  for (const token of BEDROCK_MODULE_NAME_TOKENS) {
+    if (normalized.includes(token)) matched.push(token);
+  }
+  return matched;
+}
+
+/**
+ * Find `data "terraform_remote_state" "X"` blocks where X looks like an
+ * account-baseline / central-logging stack reference.
+ */
+export function findBaselineRemoteState(
+  files: ParsedFile[],
+): Array<{ dataAddress: string; name: string; matchedToken: string; filePath: string }> {
+  const results: Array<{ dataAddress: string; name: string; matchedToken: string; filePath: string }> = [];
+
+  for (const file of files) {
+    const remoteStates = file.json.data?.terraform_remote_state;
+    if (!remoteStates) continue;
+    for (const name of Object.keys(remoteStates)) {
+      const lower = name.toLowerCase();
+      const matchedToken = BASELINE_REMOTE_STATE_NAMES.find((tok) => lower.includes(tok));
+      if (!matchedToken) continue;
+      results.push({
+        dataAddress: `data.terraform_remote_state.${name}`,
+        name,
+        matchedToken,
+        filePath: file.filePath,
+      });
+    }
+  }
+
+  return results;
+}
+
+/**
+ * Find resource attribute *values* of the form
+ * `data.terraform_remote_state.<X>.outputs.<Y>` where Y is a Bedrock-logging
+ * input key. Catches "I'm pulling the log bucket from the baseline stack."
+ *
+ * Returns one entry per (referencing-resource, target-output) pair.
+ */
+export function findBedrockLoggingReferences(files: ParsedFile[]): Array<{
+  resourceAddress: string;
+  remoteStateName: string;
+  outputKey: string;
+  filePath: string;
+}> {
+  const results: Array<{
+    resourceAddress: string;
+    remoteStateName: string;
+    outputKey: string;
+    filePath: string;
+  }> = [];
+
+  for (const file of files) {
+    const resourceTree = file.json.resource;
+    if (!resourceTree) continue;
+    for (const [type, byName] of Object.entries(resourceTree)) {
+      for (const [name, bodies] of Object.entries(byName)) {
+        const body = Array.isArray(bodies) ? bodies[0] : bodies;
+        for (const ref of collectRemoteStateRefs(body)) {
+          if (
+            (BEDROCK_LOGGING_INPUT_KEYS as readonly string[]).includes(ref.outputKey)
+          ) {
+            results.push({
+              resourceAddress: `${type}.${name}`,
+              remoteStateName: ref.remoteStateName,
+              outputKey: ref.outputKey,
+              filePath: file.filePath,
+            });
+          }
+        }
+      }
+    }
+  }
+
+  return results;
+}
+
+/**
+ * Walk every string value inside `obj` and yield any
+ * data.terraform_remote_state.<name>.outputs.<key> reference found.
+ * No regex — splits on "." and checks segment positions.
+ */
+function collectRemoteStateRefs(obj: unknown): Array<{ remoteStateName: string; outputKey: string }> {
+  const out: Array<{ remoteStateName: string; outputKey: string }> = [];
+  visitStrings(obj, (s) => {
+    const stripped = stripInterpolationWrapper(s);
+    const parts = stripped.split('.');
+    // data.terraform_remote_state.<name>.outputs.<key>[.<rest>...]
+    if (parts.length < 5) return;
+    if (parts[0] !== 'data') return;
+    if (parts[1] !== 'terraform_remote_state') return;
+    if (parts[3] !== 'outputs') return;
+    out.push({ remoteStateName: parts[2], outputKey: parts[4] });
+  });
+  return out;
+}
+
+function visitStrings(value: unknown, visit: (s: string) => void): void {
+  if (typeof value === 'string') {
+    visit(value);
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const v of value) visitStrings(v, visit);
+    return;
+  }
+  if (value !== null && typeof value === 'object') {
+    for (const v of Object.values(value as Record<string, unknown>)) visitStrings(v, visit);
+  }
+}
+
+function stripInterpolationWrapper(s: string): string {
+  if (s.startsWith('${') && s.endsWith('}')) return s.slice(2, -1);
+  return s;
+}
