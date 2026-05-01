@@ -52,8 +52,15 @@ export const s3EncryptionRule: ScanRule = {
           ruleId: this.id,
           status: 'FAIL',
           filePath: '',
-          description: `No server-side encryption configuration found for log bucket "${bucketName}".`,
-          remediation: 'Add aws_s3_bucket_server_side_encryption_configuration with SSE algorithm set to aws:kms or aws:kms:dsse.',
+          description: `No aws_s3_bucket_server_side_encryption_configuration found for log bucket "${bucketName}". Encryption posture falls back to the bucket default (SSE-S3 / AES256), which is invisible to per-call audit.`,
+          remediation:
+            'Add aws_s3_bucket_server_side_encryption_configuration with sse_algorithm = ' +
+            '"aws:kms" or "aws:kms:dsse". ' +
+            'Why KMS specifically: SSE-S3 (AES256) encrypts at rest but does not emit per-call ' +
+            'CloudTrail Decrypt events — every read of your AI logs is invisible to the audit ' +
+            'trail. KMS-encrypted reads emit Decrypt events with the principal, which is exactly ' +
+            'what Article 12 requires for downstream-deployer access traceability. ' +
+            'aws:kms:dsse adds dual-layer defense-in-depth at modest cost.',
           regulatoryReference: this.regulatoryReference,
         });
         continue;
@@ -83,8 +90,12 @@ export const s3EncryptionRule: ScanRule = {
           status: 'FAIL',
           filePath: matching.filePath,
           line,
-          description: `Log bucket "${bucketName}" uses "${sseAlgorithm || 'no'}" encryption instead of KMS.`,
-          remediation: 'Set sse_algorithm to "aws:kms" or "aws:kms:dsse" in the encryption configuration.',
+          description: `Log bucket "${bucketName}" uses "${sseAlgorithm || 'no'}" encryption instead of KMS — log access is encrypted at rest but is not auditable per-call.`,
+          remediation:
+            'Set sse_algorithm to "aws:kms" or "aws:kms:dsse" in the encryption configuration. ' +
+            'Why: AES256 (SSE-S3) does not emit CloudTrail Decrypt events, so reads of AI logs ' +
+            'are invisible to your audit trail. KMS Decrypt events name the principal who read ' +
+            'the data — Article 12 requires this level of traceability for downstream-deployer access.',
           regulatoryReference: this.regulatoryReference,
         });
       }

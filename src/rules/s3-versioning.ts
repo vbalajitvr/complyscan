@@ -76,8 +76,16 @@ export const s3VersioningRule: ScanRule = {
           ruleId: this.id,
           status: 'FAIL',
           filePath: '',
-          description: `Log bucket "${bucketName}" does not have versioning or Object Lock enabled.`,
-          remediation: 'Add aws_s3_bucket_versioning with status "Enabled" or aws_s3_bucket_object_lock_configuration for the log bucket.',
+          description: `Log bucket "${bucketName}" has neither versioning nor Object Lock enabled — a same-key PUT or a DeleteObject call will silently overwrite or remove log entries with no recoverable history.`,
+          remediation:
+            'Add aws_s3_bucket_versioning with versioning_configuration.status = "Enabled", ' +
+            'or aws_s3_bucket_object_lock_configuration. ' +
+            'Why: Article 12 requires log integrity sufficient for downstream auditability. ' +
+            'Without versioning, an attacker (or a script bug) can overwrite a log object ' +
+            'using the same key and erase forensic evidence — by the time you notice, the ' +
+            'original is gone. Best practice for high-risk AI is Object Lock in COMPLIANCE ' +
+            'mode (immutable for the retention period); versioning + a bucket policy that ' +
+            'denies s3:DeleteObject is acceptable for lower-risk systems.',
           regulatoryReference: this.regulatoryReference,
         });
       }

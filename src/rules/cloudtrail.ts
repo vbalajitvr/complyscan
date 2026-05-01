@@ -1,53 +1,117 @@
 import { ScanRule, Finding, ParsedFile, ScanContext } from '../types';
-import { findResources, findResourceLine, getNestedValue } from '../utils/resource-helpers';
+import {
+  findResources,
+  findResourceLine,
+  getNestedValue,
+  findBaselineRemoteState,
+} from '../utils/resource-helpers';
+
+const REGULATORY_REFERENCE = 'EU AI Act Article 12 — Audit trail for AI system events';
+
+const ADVICE =
+  'Verify CloudTrail is enabled in your AWS account. If it is managed in a separate ' +
+  'account-baseline stack, scan that stack or pass --strict-account-logging. ' +
+  'If no trail exists, add an aws_cloudtrail resource with enable_logging = true.';
 
 export const cloudtrailRule: ScanRule = {
   id: 'S-12.x.4',
   description: 'CloudTrail must exist and have logging enabled',
   severity: 'FAIL',
-  regulatoryReference: 'EU AI Act Article 12 — Audit trail for AI system events',
+  regulatoryReference: REGULATORY_REFERENCE,
 
-  run(files: ParsedFile[], _context: ScanContext): Finding[] {
+  run(files: ParsedFile[], context: ScanContext): Finding[] {
     const trails = findResources(files, 'aws_cloudtrail');
 
-    if (trails.length === 0) {
+    // Trail(s) present — check whether logging is actually enabled.
+    if (trails.length > 0) {
+      return trails.map((trail) => {
+        const enableLogging = getNestedValue(trail.body, 'enable_logging');
+
+        // enable_logging defaults to true in the AWS provider if not set.
+        if (enableLogging === false) {
+          return {
+            ruleId: this.id,
+            status: 'FAIL' as const,
+            filePath: trail.filePath,
+            line: findResourceLine(trail.rawHcl, 'aws_cloudtrail', trail.name),
+            description: `CloudTrail "${trail.name}" has enable_logging set to false — no control-plane events are being captured.`,
+            remediation: 'Set enable_logging = true on the aws_cloudtrail resource.',
+            regulatoryReference: REGULATORY_REFERENCE,
+          };
+        }
+
+        return {
+          ruleId: this.id,
+          status: 'PASS' as const,
+          filePath: trail.filePath,
+          line: findResourceLine(trail.rawHcl, 'aws_cloudtrail', trail.name),
+          description: `CloudTrail "${trail.name}" is configured with logging enabled.`,
+          remediation: '',
+          regulatoryReference: REGULATORY_REFERENCE,
+        };
+      });
+    }
+
+    // No trail in scanned files. Check for baseline-stack evidence first —
+    // a data.terraform_remote_state.account_baseline / audit / security / etc.
+    // strongly implies the trail lives in a separate stack that wasn't scanned.
+    const baselineHints = findBaselineRemoteState(files);
+    if (baselineHints.length > 0) {
+      const refs = baselineHints.map((h) => h.dataAddress).join(', ');
       return [
         {
           ruleId: this.id,
-          status: 'FAIL',
+          status: 'INCONCLUSIVE' as const,
           filePath: '',
-          description: 'No aws_cloudtrail resource found. CloudTrail is required for audit logging.',
-          remediation: 'Add an aws_cloudtrail resource with enable_logging set to true.',
-          regulatoryReference: this.regulatoryReference,
+          description:
+            `No aws_cloudtrail found in scanned files, but baseline remote-state ` +
+            `reference(s) ${refs} suggest account-level infrastructure (including ` +
+            `CloudTrail) is managed in a separate stack. Compliance cannot be verified ` +
+            `from these files alone.`,
+          remediation: ADVICE,
+          regulatoryReference: REGULATORY_REFERENCE,
         },
       ];
     }
 
-    return trails.map((trail) => {
-      const enableLogging = getNestedValue(trail.body, 'enable_logging');
-
-      // enable_logging defaults to true if not set; only FAIL if explicitly false
-      if (enableLogging === false) {
-        return {
+    // No trail, no cross-stack evidence. In strict mode this is a hard FAIL.
+    // In default (permissive) mode it is INCONCLUSIVE — CloudTrail is typically
+    // an account-baseline resource; a single-app stack not declaring it is not
+    // proof that it doesn't exist in the account.
+    if (context.strictAccountLogging) {
+      return [
+        {
           ruleId: this.id,
           status: 'FAIL' as const,
-          filePath: trail.filePath,
-          line: findResourceLine(trail.rawHcl, 'aws_cloudtrail', trail.name),
-          description: `CloudTrail "${trail.name}" has enable_logging set to false.`,
-          remediation: 'Set enable_logging to true on the aws_cloudtrail resource.',
-          regulatoryReference: this.regulatoryReference,
-        };
-      }
+          filePath: '',
+          description:
+            'No aws_cloudtrail resource found in scanned files. ' +
+            '(Strict account-logging mode: missing CloudTrail treated as FAIL.)',
+          remediation:
+            'Add an aws_cloudtrail resource with enable_logging = true (and is_multi_region_trail = true ' +
+            'for production), or scan the account-baseline stack where the trail is defined. ' +
+            'Why: CloudTrail is the only AWS service that records control-plane events ' +
+            '(who created/modified/deleted Bedrock resources, IAM grants, log buckets). ' +
+            'Without it, an Article 12 audit cannot reconstruct *who changed the AI system* ' +
+            'or *when guardrails were modified* — the model-invocation logs alone do not capture this.',
+          regulatoryReference: REGULATORY_REFERENCE,
+        },
+      ];
+    }
 
-      return {
+    return [
+      {
         ruleId: this.id,
-        status: 'PASS' as const,
-        filePath: trail.filePath,
-        line: findResourceLine(trail.rawHcl, 'aws_cloudtrail', trail.name),
-        description: `CloudTrail "${trail.name}" is configured with logging enabled.`,
-        remediation: '',
-        regulatoryReference: this.regulatoryReference,
-      };
-    });
+        status: 'INCONCLUSIVE' as const,
+        filePath: '',
+        description:
+          'No aws_cloudtrail found in scanned files and no cross-stack evidence detected. ' +
+          'Why inconclusive: CloudTrail is typically managed in a separate account-baseline ' +
+          'stack. The scanner cannot tell from this directory alone whether a trail exists ' +
+          'elsewhere in your AWS account or is genuinely missing.',
+        remediation: ADVICE,
+        regulatoryReference: REGULATORY_REFERENCE,
+      },
+    ];
   },
 };

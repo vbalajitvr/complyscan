@@ -573,19 +573,31 @@ export function findBedrockRelatedModuleCalls(files: ParsedFile[]): Array<{
         typeof source === 'string' && !source.startsWith('./') && !source.startsWith('../');
 
       const matchedTokens = matchModuleNameTokens(name);
+      const matchedSourceTokens = source ? matchModuleNameTokens(source) : [];
 
       const inputKeys = body ? Object.keys(body) : [];
       const matchedInputKeys = inputKeys.filter((k) =>
         (BEDROCK_LOGGING_INPUT_KEYS as readonly string[]).includes(k),
       );
 
-      if (matchedTokens.length === 0 && matchedInputKeys.length === 0) continue;
+      if (
+        matchedTokens.length === 0 &&
+        matchedSourceTokens.length === 0 &&
+        matchedInputKeys.length === 0
+      ) {
+        continue;
+      }
+
+      // Surface source-token matches via matchedTokens so callers (and the
+      // remote-module wall) can describe *why* the module was flagged without
+      // a new field on the result shape.
+      const allTokens = Array.from(new Set([...matchedTokens, ...matchedSourceTokens]));
 
       results.push({
         name,
         source,
         isRemote,
-        matchedTokens,
+        matchedTokens: allTokens,
         matchedInputKeys,
         filePath: file.filePath,
       });

@@ -4,12 +4,13 @@ import * as path from 'path';
 import { ParsedFile, HCL2JSONOutput } from './types';
 
 const SKIP_DIRS = new Set([
-  'node_modules',  // JS/TS dependencies (CDK for Terraform)
-  'venv', 'env',   // Python virtualenvs (.venv is caught by the leading-dot check)
-  '__pycache__',   // Python bytecode cache
-  'examples',      // demo configs in shared module repos — not production infra
-  'test', 'tests', // Terraform test fixtures intentionally omit compliance controls
-  'vendor',        // vendored module copies
+  'node_modules',         // JS/TS dependencies (CDK for Terraform)
+  'venv', 'env',          // Python virtualenvs (.venv is caught by the leading-dot check)
+  '__pycache__',          // Python bytecode cache
+  'examples',             // demo configs in shared module repos — not production infra
+  'test', 'tests',        // Terraform test fixtures intentionally omit compliance controls
+  'testdata', 'fixtures', // Sibling-tool fixtures (e.g. pike/src/testdata) — not the user's infra
+  'vendor',               // vendored module copies
 ]);
 
 /**

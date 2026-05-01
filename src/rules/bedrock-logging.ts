@@ -146,8 +146,13 @@ function evaluateLoggingConfig(config: {
       status: 'FAIL',
       filePath: config.filePath,
       line,
-      description: `Bedrock logging resource "${config.name}" exists but all data-delivery toggles are set to false — no invocations will be logged.`,
-      remediation: `Enable at least one of ${MODALITY_TOGGLES.join(', ')} on logging_config.`,
+      description: `Bedrock logging resource "${config.name}" exists but every *_data_delivery_enabled toggle is set to false — AWS will accept this configuration, but no invocations will actually be written.`,
+      remediation:
+        `Set at least one of ${MODALITY_TOGGLES.join(', ')} to true on logging_config ` +
+        `(or remove the toggles entirely — when unset, AWS enables all modalities by default). ` +
+        `Why: this is one of the most common Article 12 failure modes — the resource exists, ` +
+        `Terraform applies cleanly, dashboards look "configured", but the log destination ` +
+        `stays empty. Verify with the AWS console or "aws bedrock get-model-invocation-logging-configuration".`,
       regulatoryReference: REGULATORY_REFERENCE,
     };
   }
@@ -252,7 +257,13 @@ function buildStrictModeFail(
     filePath: '',
     description: `${usageSummary} No aws_bedrock_model_invocation_logging_configuration is defined in scanned files. (Strict account-logging mode: missing logging treated as FAIL.)`,
     remediation:
-      'Add an aws_bedrock_model_invocation_logging_configuration resource to log all model invocations.',
+      'Add an aws_bedrock_model_invocation_logging_configuration resource pointing at a ' +
+      'CloudWatch log group or S3 bucket — and enable at least one of text_data_delivery_enabled, ' +
+      'image_data_delivery_enabled, embedding_data_delivery_enabled, or video_data_delivery_enabled. ' +
+      'Why: Article 12(1) mandates *automatic* recording of events throughout the AI system\'s ' +
+      'operational lifetime. Without invocation logging, you have no record of what prompts were ' +
+      'sent, what responses were returned, or which model version produced them — making bias ' +
+      'investigation, hallucination forensics, and downstream-deployer audits impossible.',
     regulatoryReference: REGULATORY_REFERENCE,
   };
 }
@@ -267,7 +278,7 @@ function buildPermissiveInconclusive(
     ruleId,
     status: 'INCONCLUSIVE',
     filePath: '',
-    description: `${usageSummary} No aws_bedrock_model_invocation_logging_configuration in scanned files. Logging may be configured in another stack (e.g. account-baseline). Pass --strict-account-logging if the entire infra estate is expected to be in scope.`,
+    description: `${usageSummary} No aws_bedrock_model_invocation_logging_configuration found in scanned files, and no cross-stack logging evidence was detected. If logging is configured in a separate stack, scan that directory too. Pass --strict-account-logging if this directory covers the entire infra estate and missing logging should be treated as FAIL.`,
     remediation: RUN_PLAN_HINT,
     regulatoryReference: REGULATORY_REFERENCE,
   };
