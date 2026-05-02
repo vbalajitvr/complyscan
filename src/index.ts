@@ -4,23 +4,23 @@ import * as fs from 'fs';
 import { ensureHcl2Json } from './utils/hcl2json-check';
 import { parseAllTfFiles } from './parser';
 import { runScan } from './runner';
-import { formatTerminal, formatJson } from './formatter';
+import { formatTerminal, formatJson, formatHtml } from './formatter';
 
 const program = new Command();
 
 program
-  .name('complyscan')
+  .name('infrarails')
   .description('Scan Terraform HCL files for EU AI Act Article 12 compliance gaps')
   .version('0.1.0')
   .argument('<directory>', 'Directory containing Terraform .tf files')
-  .option('-f, --format <format>', 'Output format: terminal or json', 'terminal')
+  .option('-f, --format <format>', 'Output format: terminal, json, or html', 'terminal')
   .option(
     '--no-strict',
     'Treat INCONCLUSIVE findings as non-blocking (do not affect exit code). Default is strict: INCONCLUSIVE blocks like FAIL/WARN.',
   )
   .option(
     '--strict-account-logging',
-    'Treat missing Bedrock invocation logging as FAIL even when no in-repo evidence is present. Default is INCONCLUSIVE — most enterprises put the logging config in a separate account-baseline stack.',
+    'Treat missing Bedrock invocation logging as FAIL even when no in-repo evidence is present. Default is INCONCLUSIVE - most enterprises put the logging config in a separate account-baseline stack.',
     false,
   )
   .action((
@@ -52,6 +52,8 @@ program
     // Format output
     if (options.format === 'json') {
       console.log(formatJson(findings));
+    } else if (options.format === 'html') {
+      console.log(formatHtml(findings));
     } else {
       console.log(formatTerminal(findings));
     }

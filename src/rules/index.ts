@@ -6,6 +6,7 @@ import { s3VersioningRule } from './s3-versioning';
 import { s3EncryptionRule } from './s3-encryption';
 import { cloudtrailRule } from './cloudtrail';
 import { remoteModuleWallRule } from './module-wall';
+import { agentGuardrailRule } from './agent-guardrail';
 
 export const allRules: ScanRule[] = [
   bedrockLoggingRule,
@@ -15,4 +16,5 @@ export const allRules: ScanRule[] = [
   s3EncryptionRule,
   cloudtrailRule,
   remoteModuleWallRule,
+  agentGuardrailRule,
 ];

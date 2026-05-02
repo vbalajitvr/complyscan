@@ -5,7 +5,9 @@ export const s3EncryptionRule: ScanRule = {
   id: 'S-12.x.2a',
   description: 'S3 log bucket must use KMS encryption',
   severity: 'FAIL',
-  regulatoryReference: 'EU AI Act Article 12 — Integrity and confidentiality of logs',
+  regulatoryReference: 'EU AI Act Article 12 - Integrity and confidentiality of logs',
+  nistReference: 'NIST AI RMF 1.0: MEASURE 2.7 (security and resilience); MEASURE 2.10 (privacy of AI system data)',
+  isoReference: 'ISO/IEC 42001:2023 Annex A: A.6.2.8 (AI system event logs); A.7.4 (Quality of data - integrity protection)',
 
   run(files: ParsedFile[], context: ScanContext): Finding[] {
     if (!context.bedrockLoggingDetected) {
@@ -17,6 +19,8 @@ export const s3EncryptionRule: ScanRule = {
           description: 'No Bedrock logging detected. S3 encryption check skipped.',
           remediation: '',
           regulatoryReference: this.regulatoryReference,
+          nistReference: this.nistReference,
+          isoReference: this.isoReference,
         },
       ];
     }
@@ -24,7 +28,7 @@ export const s3EncryptionRule: ScanRule = {
     const findings: Finding[] = [];
 
     for (const ref of context.unresolvedBucketRefs) {
-      findings.push(inconclusiveFromUnresolved(this.id, this.regulatoryReference, ref, 'bucket'));
+      findings.push(inconclusiveFromUnresolved(this, ref, 'bucket'));
     }
 
     if (context.logBucketNames.length === 0 && context.unresolvedBucketRefs.length === 0) {
@@ -36,6 +40,8 @@ export const s3EncryptionRule: ScanRule = {
           description: 'Bedrock logging does not use S3. Skipping S3 encryption check.',
           remediation: '',
           regulatoryReference: this.regulatoryReference,
+          nistReference: this.nistReference,
+          isoReference: this.isoReference,
         },
       ];
     }
@@ -57,11 +63,13 @@ export const s3EncryptionRule: ScanRule = {
             'Add aws_s3_bucket_server_side_encryption_configuration with sse_algorithm = ' +
             '"aws:kms" or "aws:kms:dsse". ' +
             'Why KMS specifically: SSE-S3 (AES256) encrypts at rest but does not emit per-call ' +
-            'CloudTrail Decrypt events — every read of your AI logs is invisible to the audit ' +
+            'CloudTrail Decrypt events - every read of your AI logs is invisible to the audit ' +
             'trail. KMS-encrypted reads emit Decrypt events with the principal, which is exactly ' +
             'what Article 12 requires for downstream-deployer access traceability. ' +
             'aws:kms:dsse adds dual-layer defense-in-depth at modest cost.',
           regulatoryReference: this.regulatoryReference,
+          nistReference: this.nistReference,
+          isoReference: this.isoReference,
         });
         continue;
       }
@@ -83,6 +91,8 @@ export const s3EncryptionRule: ScanRule = {
           description: `Log bucket "${bucketName}" uses ${sseAlgorithm} encryption.`,
           remediation: '',
           regulatoryReference: this.regulatoryReference,
+          nistReference: this.nistReference,
+          isoReference: this.isoReference,
         });
       } else {
         findings.push({
@@ -90,13 +100,15 @@ export const s3EncryptionRule: ScanRule = {
           status: 'FAIL',
           filePath: matching.filePath,
           line,
-          description: `Log bucket "${bucketName}" uses "${sseAlgorithm || 'no'}" encryption instead of KMS — log access is encrypted at rest but is not auditable per-call.`,
+          description: `Log bucket "${bucketName}" uses "${sseAlgorithm || 'no'}" encryption instead of KMS - log access is encrypted at rest but is not auditable per-call.`,
           remediation:
             'Set sse_algorithm to "aws:kms" or "aws:kms:dsse" in the encryption configuration. ' +
             'Why: AES256 (SSE-S3) does not emit CloudTrail Decrypt events, so reads of AI logs ' +
             'are invisible to your audit trail. KMS Decrypt events name the principal who read ' +
-            'the data — Article 12 requires this level of traceability for downstream-deployer access.',
+            'the data - Article 12 requires this level of traceability for downstream-deployer access.',
           regulatoryReference: this.regulatoryReference,
+          nistReference: this.nistReference,
+          isoReference: this.isoReference,
         });
       }
     }

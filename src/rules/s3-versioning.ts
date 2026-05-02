@@ -5,7 +5,9 @@ export const s3VersioningRule: ScanRule = {
   id: 'S-12.x.1',
   description: 'S3 log bucket must have versioning or Object Lock enabled',
   severity: 'FAIL',
-  regulatoryReference: 'EU AI Act Article 12 — Immutability of logged data',
+  regulatoryReference: 'EU AI Act Article 12 - Immutability of logged data',
+  nistReference: 'NIST AI RMF 1.0: MEASURE 2.7 (security and resilience); MANAGE 4.3 (incident response evidence preservation)',
+  isoReference: 'ISO/IEC 42001:2023 Annex A: A.6.2.8 (AI system event logs - integrity); A.6.2.4 (AI system verification and validation)',
 
   run(files: ParsedFile[], context: ScanContext): Finding[] {
     if (!context.bedrockLoggingDetected) {
@@ -17,6 +19,8 @@ export const s3VersioningRule: ScanRule = {
           description: 'No Bedrock logging detected. S3 versioning check skipped.',
           remediation: '',
           regulatoryReference: this.regulatoryReference,
+          nistReference: this.nistReference,
+          isoReference: this.isoReference,
         },
       ];
     }
@@ -24,7 +28,7 @@ export const s3VersioningRule: ScanRule = {
     const findings: Finding[] = [];
 
     for (const ref of context.unresolvedBucketRefs) {
-      findings.push(inconclusiveFromUnresolved(this.id, this.regulatoryReference, ref, 'bucket'));
+      findings.push(inconclusiveFromUnresolved(this, ref, 'bucket'));
     }
 
     if (context.logBucketNames.length === 0 && context.unresolvedBucketRefs.length === 0) {
@@ -36,6 +40,8 @@ export const s3VersioningRule: ScanRule = {
           description: 'Bedrock logging does not use S3. Skipping S3 versioning check.',
           remediation: '',
           regulatoryReference: this.regulatoryReference,
+          nistReference: this.nistReference,
+          isoReference: this.isoReference,
         },
       ];
     }
@@ -70,23 +76,27 @@ export const s3VersioningRule: ScanRule = {
           description: `Log bucket "${bucketName}" has ${hasVersioning ? 'versioning' : 'Object Lock'} enabled.`,
           remediation: '',
           regulatoryReference: this.regulatoryReference,
+          nistReference: this.nistReference,
+          isoReference: this.isoReference,
         });
       } else {
         findings.push({
           ruleId: this.id,
           status: 'FAIL',
           filePath: '',
-          description: `Log bucket "${bucketName}" has neither versioning nor Object Lock enabled — a same-key PUT or a DeleteObject call will silently overwrite or remove log entries with no recoverable history.`,
+          description: `Log bucket "${bucketName}" has neither versioning nor Object Lock enabled - a same-key PUT or a DeleteObject call will silently overwrite or remove log entries with no recoverable history.`,
           remediation:
             'Add aws_s3_bucket_versioning with versioning_configuration.status = "Enabled", ' +
             'or aws_s3_bucket_object_lock_configuration. ' +
             'Why: Article 12 requires log integrity sufficient for downstream auditability. ' +
             'Without versioning, an attacker (or a script bug) can overwrite a log object ' +
-            'using the same key and erase forensic evidence — by the time you notice, the ' +
+            'using the same key and erase forensic evidence - by the time you notice, the ' +
             'original is gone. Best practice for high-risk AI is Object Lock in COMPLIANCE ' +
             'mode (immutable for the retention period); versioning + a bucket policy that ' +
             'denies s3:DeleteObject is acceptable for lower-risk systems.',
           regulatoryReference: this.regulatoryReference,
+          nistReference: this.nistReference,
+          isoReference: this.isoReference,
         });
       }
     }

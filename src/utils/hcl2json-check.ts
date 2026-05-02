@@ -7,7 +7,7 @@ export function ensureHcl2Json(): void {
   } catch {
     console.error(chalk.red('Error: hcl2json binary not found on PATH.'));
     console.error('');
-    console.error('complyscan requires hcl2json to parse Terraform files.');
+    console.error('infrarails requires hcl2json to parse Terraform files.');
     console.error('');
     console.error('Install instructions:');
     console.error('  Go:    go install github.com/tmccombs/hcl2json@latest');

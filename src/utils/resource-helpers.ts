@@ -1,26 +1,27 @@
-import { Finding, ParsedFile, UnresolvedRef } from '../types';
+import { Finding, ParsedFile, ScanRule, UnresolvedRef } from '../types';
 import { explainReason, resolveExpression } from '../resolver';
 
 /**
  * Build an INCONCLUSIVE finding for a rule that depends on a Bedrock-logging
  * reference we could not resolve statically (var with no default, SSM, module
  * output, etc.). Used to make the scanner honest when source-only scanning
- * cannot verify the check — instead of silently SKIP-ing.
+ * cannot verify the check - instead of silently SKIP-ing.
  */
 export function inconclusiveFromUnresolved(
-  ruleId: string,
-  regulatoryReference: string,
+  rule: ScanRule,
   ref: UnresolvedRef,
   scope: 'bucket' | 'log group',
 ): Finding {
   return {
-    ruleId,
+    ruleId: rule.id,
     status: 'INCONCLUSIVE',
     filePath: '',
-    description: `Cannot verify ${ruleId} for ${scope} reference \`${ref.expression}\` (at ${ref.sourceField}): ${explainReason(ref.reason)}`,
+    description: `Cannot verify ${rule.id} for ${scope} reference \`${ref.expression}\` (at ${ref.sourceField}): ${explainReason(ref.reason)}`,
     remediation:
-      'Either reference the resource via `aws_s3_bucket.<name>.id` / `aws_cloudwatch_log_group.<name>.name` so static scanning can follow it, or run complyscan against `terraform show -json plan.json` for full apply-time resolution.',
-    regulatoryReference,
+      'Either reference the resource via `aws_s3_bucket.<name>.id` / `aws_cloudwatch_log_group.<name>.name` so static scanning can follow it, or run infrarails against `terraform show -json plan.json` for full apply-time resolution.',
+    regulatoryReference: rule.regulatoryReference,
+    nistReference: rule.nistReference,
+    isoReference: rule.isoReference,
   };
 }
 
@@ -147,7 +148,7 @@ export function matchesBucket(
  * a local relative path (./... or ../...).
  *
  * Resources inside remote modules are never on disk during a source-only scan,
- * so complyscan cannot verify their compliance. Callers should emit INCONCLUSIVE.
+ * so infrarails cannot verify their compliance. Callers should emit INCONCLUSIVE.
  */
 export function findRemoteModules(
   files: ParsedFile[],
@@ -191,7 +192,7 @@ function escapeRegex(str: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Bedrock detection — finite lists, no regex.
+// Bedrock detection - finite lists, no regex.
 //
 // All Bedrock-related detection uses explicit string lists. New AWS resource
 // types, IAM actions, and VPC service names are added by appending to a list,
@@ -200,7 +201,7 @@ function escapeRegex(str: string): string {
 // ---------------------------------------------------------------------------
 
 /**
- * Direct Bedrock infrastructure resource types — declaring any of these in
+ * Direct Bedrock infrastructure resource types - declaring any of these in
  * Terraform deploys Bedrock infra.
  *
  * Excludes aws_bedrock_model_invocation_logging_configuration: that is the
@@ -394,7 +395,7 @@ export function findBedrockDataSources(
  * Caller treats hits as INDIRECT Bedrock usage (SDK-driven workloads).
  *
  * For inline JSON policies that contain unparseable interpolations, returns
- * nothing for that resource — silent miss is preferable to false signal.
+ * nothing for that resource - silent miss is preferable to false signal.
  */
 export function findIamBedrockGrants(
   files: ParsedFile[],
@@ -418,7 +419,7 @@ export function findIamBedrockGrants(
     }
   }
 
-  // 2. Inline policy resources — `policy` attribute is a JSON string.
+  // 2. Inline policy resources - `policy` attribute is a JSON string.
   for (const type of INLINE_IAM_POLICY_RESOURCE_TYPES) {
     for (const r of findResources(files, type)) {
       const policy = getNestedValue(r.body, 'policy');
@@ -537,7 +538,7 @@ function matchesBedrockServiceSuffix(s: string): boolean {
 }
 
 /**
- * Find module calls (local or remote) that look Bedrock-logging-related —
+ * Find module calls (local or remote) that look Bedrock-logging-related -
  * either the local module name contains a Bedrock token, OR the module body
  * passes one of the BEDROCK_LOGGING_INPUT_KEYS as an input.
  *
@@ -692,7 +693,7 @@ export function findBedrockLoggingReferences(files: ParsedFile[]): Array<{
 /**
  * Walk every string value inside `obj` and yield any
  * data.terraform_remote_state.<name>.outputs.<key> reference found.
- * No regex — splits on "." and checks segment positions.
+ * No regex - splits on "." and checks segment positions.
  */
 function collectRemoteStateRefs(obj: unknown): Array<{ remoteStateName: string; outputKey: string }> {
   const out: Array<{ remoteStateName: string; outputKey: string }> = [];

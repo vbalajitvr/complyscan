@@ -1,0 +1,118 @@
+import { ScanRule, Finding, ParsedFile, ScanContext } from '../types';
+import { findResources, findResourceLine, getNestedValue } from '../utils/resource-helpers';
+
+const REGULATORY_REFERENCE = 'EU AI Act Article 9 - Risk management system for high-risk AI systems';
+const NIST_REFERENCE =
+  'NIST AI RMF 1.0: MEASURE 2.6 (AI system safety); MAP 5.1 (likelihood and magnitude of impacts); GOVERN 1.4 (transparent risk-management policies)';
+const ISO_REFERENCE =
+  'ISO/IEC 42001:2023 Annex A: A.6.1.2 (objectives for AI system); A.6.2.4 (verification and validation); A.6.2.5 (deployment)';
+
+const RATIONALE =
+  'Bedrock Agents reason in chains, invoke action-group Lambdas, and retrieve from knowledge bases - ' +
+  'any of which can produce harmful output (prompt injection, data exfiltration, hallucinated tool calls, ' +
+  'denied-topic responses). Article 9 requires an operative risk-management system for high-risk AI; ' +
+  'Bedrock Guardrails are the AWS-native enforcement point for content filters, denied topics, PII ' +
+  'redaction, and grounding checks. An agent without a guardrail in production has no Article 9 control surface.';
+
+export const agentGuardrailRule: ScanRule = {
+  id: 'S-9.x.1',
+  description: 'Bedrock Agents must have a versioned guardrail attached',
+  severity: 'FAIL',
+  regulatoryReference: REGULATORY_REFERENCE,
+  nistReference: NIST_REFERENCE,
+  isoReference: ISO_REFERENCE,
+
+  run(files: ParsedFile[], _context: ScanContext): Finding[] {
+    const agents = findResources(files, 'aws_bedrockagent_agent');
+
+    if (agents.length === 0) {
+      return [
+        {
+          ruleId: this.id,
+          status: 'SKIP',
+          filePath: '',
+          description: 'No Bedrock Agents detected. Guardrail attachment check skipped.',
+          remediation: '',
+          regulatoryReference: REGULATORY_REFERENCE,
+          nistReference: NIST_REFERENCE,
+          isoReference: ISO_REFERENCE,
+        },
+      ];
+    }
+
+    return agents.map((agent) => {
+      const line = findResourceLine(agent.rawHcl, 'aws_bedrockagent_agent', agent.name);
+      const guardrail = getNestedValue(agent.body, 'guardrail_configuration');
+
+      if (!guardrail) {
+        return {
+          ruleId: this.id,
+          status: 'FAIL' as const,
+          filePath: agent.filePath,
+          line,
+          description: `Bedrock Agent "${agent.name}" has no guardrail_configuration block - the agent will run with no content filters, denied-topic enforcement, PII redaction, or grounding checks.`,
+          remediation:
+            'Add a guardrail_configuration block to aws_bedrockagent_agent referencing an ' +
+            'aws_bedrock_guardrail (with guardrail_identifier set to the guardrail ID and ' +
+            'guardrail_version pinned to a numbered version, not "DRAFT"). ' +
+            `Why: ${RATIONALE}`,
+          regulatoryReference: REGULATORY_REFERENCE,
+          nistReference: NIST_REFERENCE,
+          isoReference: ISO_REFERENCE,
+        };
+      }
+
+      const id = getNestedValue(guardrail, 'guardrail_identifier');
+      const version = getNestedValue(guardrail, 'guardrail_version');
+
+      const idMissing =
+        id === undefined || id === null || (typeof id === 'string' && id.trim() === '');
+
+      if (idMissing) {
+        return {
+          ruleId: this.id,
+          status: 'FAIL' as const,
+          filePath: agent.filePath,
+          line,
+          description: `Bedrock Agent "${agent.name}" declares guardrail_configuration but guardrail_identifier is empty or unset - no guardrail is actually attached.`,
+          remediation:
+            'Set guardrail_identifier to the ID (or ARN) of an aws_bedrock_guardrail resource. ' +
+            `Why: ${RATIONALE}`,
+          regulatoryReference: REGULATORY_REFERENCE,
+          nistReference: NIST_REFERENCE,
+          isoReference: ISO_REFERENCE,
+        };
+      }
+
+      if (!version || version === 'DRAFT') {
+        return {
+          ruleId: this.id,
+          status: 'WARN' as const,
+          filePath: agent.filePath,
+          line,
+          description: `Bedrock Agent "${agent.name}" references a guardrail with version "${version || 'unset'}" - DRAFT/unset versions are mutable and not auditable as a fixed control.`,
+          remediation:
+            'Pin guardrail_version to a numbered version (e.g. "1", "2") published from an ' +
+            'aws_bedrock_guardrail_version resource. DRAFT versions can be edited in place, so ' +
+            'a passing audit today can be a failing one tomorrow with no Terraform diff. ' +
+            `Why: ${RATIONALE}`,
+          regulatoryReference: REGULATORY_REFERENCE,
+          nistReference: NIST_REFERENCE,
+          isoReference: ISO_REFERENCE,
+        };
+      }
+
+      return {
+        ruleId: this.id,
+        status: 'PASS' as const,
+        filePath: agent.filePath,
+        line,
+        description: `Bedrock Agent "${agent.name}" has a versioned guardrail attached (version ${version}).`,
+        remediation: '',
+        regulatoryReference: REGULATORY_REFERENCE,
+        nistReference: NIST_REFERENCE,
+        isoReference: ISO_REFERENCE,
+      };
+    });
+  },
+};

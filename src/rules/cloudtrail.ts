@@ -6,7 +6,9 @@ import {
   findBaselineRemoteState,
 } from '../utils/resource-helpers';
 
-const REGULATORY_REFERENCE = 'EU AI Act Article 12 — Audit trail for AI system events';
+const REGULATORY_REFERENCE = 'EU AI Act Article 12 - Audit trail for AI system events';
+const NIST_REFERENCE = 'NIST AI RMF 1.0: MANAGE 4.1 (post-deployment monitoring plans); GOVERN 1.4 (transparent risk-management policies); MEASURE 2.7 (security and resilience)';
+const ISO_REFERENCE = 'ISO/IEC 42001:2023 Annex A: A.6.2.8 (AI system event logs); A.3.3 (Reporting of concerns)';
 
 const ADVICE =
   'Verify CloudTrail is enabled in your AWS account. If it is managed in a separate ' +
@@ -18,11 +20,13 @@ export const cloudtrailRule: ScanRule = {
   description: 'CloudTrail must exist and have logging enabled',
   severity: 'FAIL',
   regulatoryReference: REGULATORY_REFERENCE,
+  nistReference: NIST_REFERENCE,
+  isoReference: ISO_REFERENCE,
 
   run(files: ParsedFile[], context: ScanContext): Finding[] {
     const trails = findResources(files, 'aws_cloudtrail');
 
-    // Trail(s) present — check whether logging is actually enabled.
+    // Trail(s) present - check whether logging is actually enabled.
     if (trails.length > 0) {
       return trails.map((trail) => {
         const enableLogging = getNestedValue(trail.body, 'enable_logging');
@@ -34,9 +38,11 @@ export const cloudtrailRule: ScanRule = {
             status: 'FAIL' as const,
             filePath: trail.filePath,
             line: findResourceLine(trail.rawHcl, 'aws_cloudtrail', trail.name),
-            description: `CloudTrail "${trail.name}" has enable_logging set to false — no control-plane events are being captured.`,
+            description: `CloudTrail "${trail.name}" has enable_logging set to false - no control-plane events are being captured.`,
             remediation: 'Set enable_logging = true on the aws_cloudtrail resource.',
             regulatoryReference: REGULATORY_REFERENCE,
+            nistReference: NIST_REFERENCE,
+            isoReference: ISO_REFERENCE,
           };
         }
 
@@ -48,11 +54,13 @@ export const cloudtrailRule: ScanRule = {
           description: `CloudTrail "${trail.name}" is configured with logging enabled.`,
           remediation: '',
           regulatoryReference: REGULATORY_REFERENCE,
+          nistReference: NIST_REFERENCE,
+          isoReference: ISO_REFERENCE,
         };
       });
     }
 
-    // No trail in scanned files. Check for baseline-stack evidence first —
+    // No trail in scanned files. Check for baseline-stack evidence first -
     // a data.terraform_remote_state.account_baseline / audit / security / etc.
     // strongly implies the trail lives in a separate stack that wasn't scanned.
     const baselineHints = findBaselineRemoteState(files);
@@ -70,12 +78,14 @@ export const cloudtrailRule: ScanRule = {
             `from these files alone.`,
           remediation: ADVICE,
           regulatoryReference: REGULATORY_REFERENCE,
+          nistReference: NIST_REFERENCE,
+          isoReference: ISO_REFERENCE,
         },
       ];
     }
 
     // No trail, no cross-stack evidence. In strict mode this is a hard FAIL.
-    // In default (permissive) mode it is INCONCLUSIVE — CloudTrail is typically
+    // In default (permissive) mode it is INCONCLUSIVE - CloudTrail is typically
     // an account-baseline resource; a single-app stack not declaring it is not
     // proof that it doesn't exist in the account.
     if (context.strictAccountLogging) {
@@ -93,8 +103,10 @@ export const cloudtrailRule: ScanRule = {
             'Why: CloudTrail is the only AWS service that records control-plane events ' +
             '(who created/modified/deleted Bedrock resources, IAM grants, log buckets). ' +
             'Without it, an Article 12 audit cannot reconstruct *who changed the AI system* ' +
-            'or *when guardrails were modified* — the model-invocation logs alone do not capture this.',
+            'or *when guardrails were modified* - the model-invocation logs alone do not capture this.',
           regulatoryReference: REGULATORY_REFERENCE,
+          nistReference: NIST_REFERENCE,
+          isoReference: ISO_REFERENCE,
         },
       ];
     }
@@ -111,6 +123,8 @@ export const cloudtrailRule: ScanRule = {
           'elsewhere in your AWS account or is genuinely missing.',
         remediation: ADVICE,
         regulatoryReference: REGULATORY_REFERENCE,
+        nistReference: NIST_REFERENCE,
+        isoReference: ISO_REFERENCE,
       },
     ];
   },

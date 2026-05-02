@@ -8,6 +8,8 @@ export interface Finding {
   description: string;
   remediation: string;
   regulatoryReference: string;
+  nistReference?: string;
+  isoReference?: string;
 }
 
 export interface ScanRule {
@@ -15,6 +17,8 @@ export interface ScanRule {
   description: string;
   severity: 'FAIL' | 'WARN';
   regulatoryReference: string;
+  nistReference?: string;
+  isoReference?: string;
   phase1?: boolean;
   run(files: ParsedFile[], context: ScanContext): Finding[];
 }
@@ -46,7 +50,7 @@ export interface ScanContext {
   unresolvedBucketRefs: UnresolvedRef[];
   unresolvedGroupRefs: UnresolvedRef[];
   // When false (default), S-12.1.1 returns INCONCLUSIVE for "Bedrock used but no
-  // logging config in scanned files" — most enterprises put the logging config
+  // logging config in scanned files" - most enterprises put the logging config
   // in a separate account-baseline stack and a hard FAIL is wrong. When true,
   // the scanner is told the entire infra estate is in scope and missing logging
   // is a real FAIL.

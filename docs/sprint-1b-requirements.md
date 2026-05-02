@@ -22,12 +22,12 @@
 
 ```bash
 # Sprint 1A (unchanged)
-complyscan <directory> [--format terminal|json]
+infrarails <directory> [--format terminal|json]
 
 # Sprint 1B (new, additive)
-complyscan --plan <file>          # from file
-complyscan --plan -               # from stdin
-complyscan --plan <file> [--format terminal|json] [--mode pre|post]
+infrarails --plan <file>          # from file
+infrarails --plan -               # from stdin
+infrarails --plan <file> [--format terminal|json] [--mode pre|post]
 ```
 
 `--mode pre` (default): input is `terraform show -json plan.tfplan`. Labels output as pre-deployment gate.
@@ -276,7 +276,7 @@ export function runPlanScan(resources: PlanResource[]): Finding[];  // Sprint 1B
 ### Terminal — new header line in plan mode
 
 ```
-complyscan — EU AI Act Article 12 Compliance Scan
+infrarails — EU AI Act Article 12 Compliance Scan
 Mode: pre-deployment  |  Source: plan.json
 ──────────────────────────────────────────────────
 
@@ -312,7 +312,7 @@ Summary: 6 checks | 1 FAIL | 0 WARN | 4 PASS | 0 SKIP | 0 INCONCLUSIVE
 }
 ```
 
-Source scan JSON (`complyscan <dir>`) adds `"scanMode": "source"` and omits `planMode`.
+Source scan JSON (`infrarails <dir>`) adds `"scanMode": "source"` and omits `planMode`.
 
 ---
 
@@ -458,14 +458,14 @@ terraform plan -out=plan.tfplan
 terraform show -json plan.tfplan > plan.json
 
 # Step 2 — no credentials needed
-complyscan --plan plan.json --format json
+infrarails --plan plan.json --format json
 ```
 
 **Post-deployment audit (scheduled, e.g. nightly):**
 
 ```bash
 terraform show -json > state.json
-complyscan --plan state.json --mode post --format json
+infrarails --plan state.json --mode post --format json
 # Store output as compliance artefact
 ```
 
@@ -474,7 +474,7 @@ complyscan --plan state.json --mode post --format json
 ```bash
 # Already running plan anyway before applying
 terraform plan -out=plan.tfplan
-terraform show -json plan.tfplan | complyscan --plan -
+terraform show -json plan.tfplan | infrarails --plan -
 ```
 
 ---

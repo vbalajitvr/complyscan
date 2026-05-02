@@ -1,10 +1,10 @@
 {
-  "name": "complyscan",
+  "name": "infrarails",
   "version": "0.1.0",
   "description": "Static scanner for EU AI Act Article 12 compliance gaps in Terraform HCL files",
   "main": "dist/index.js",
   "bin": {
-    "complyscan": "dist/index.js"
+    "infrarails": "dist/index.js"
   },
   "scripts": {
     "build": "tsup",

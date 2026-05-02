@@ -1,20 +1,24 @@
-# complyscan
+# infrarails
 
-> Static compliance scanner for EU AI Act Article 12 - checks your Terraform infrastructure for logging and traceability gaps before they become audit findings.
+> Static compliance scanner for AWS AI infrastructure - checks your Terraform for the logging, retention, and traceability gaps that surface at audit time, mapped to **EU AI Act Article 12**, **NIST AI RMF**, and **ISO/IEC 42001**.
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![npm version](https://img.shields.io/npm/v/complyscan.svg)](https://www.npmjs.com/package/complyscan)
+[![npm version](https://img.shields.io/npm/v/infrarails.svg)](https://www.npmjs.com/package/infrarails)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D18-brightgreen.svg)](https://nodejs.org/)
 
 ---
 
 ## What is this?
 
-The **EU AI Act** (Regulation 2024/1689) requires providers of high-risk AI systems to maintain comprehensive logs of system operation to ensure traceability, accountability, and post-incident auditability. **Article 12** specifically mandates that high-risk AI systems automatically record events throughout their operational lifetime.
+`infrarails` is built for teams running **high-risk AI systems on AWS Bedrock**. It reads your **Terraform HCL source files** (and `.tf.json` files emitted by cdktf, Terragrunt, and other generators) and reports exactly which infrastructure-layer controls are passing, failing, or cannot be verified statically - giving you a clear, actionable readiness report without needing to deploy anything.
 
-`complyscan` is built for teams running **high-risk AI systems on AWS Bedrock**. It reads your **Terraform HCL source files** (and `.tf.json` files emitted by cdktf, Terragrunt, and other generators) and reports exactly which Article 12 logging controls are passing, failing, or cannot be verified statically - giving you a clear, actionable compliance gap report without needing to deploy anything.
+Each finding is cross-referenced against three frameworks:
 
-Concretely, the scanner inspects Terraform for the AWS primitives that back Article 12 logging on Bedrock:
+- **EU AI Act** (Regulation 2024/1689) - Article 12 logging and traceability
+- **NIST AI RMF 1.0** - GOVERN / MEASURE / MANAGE functions
+- **ISO/IEC 42001:2023** - Annex A controls (A.6.2.x event logging, A.7.x data quality)
+
+Concretely, the scanner inspects Terraform for the AWS primitives that back AI logging on Bedrock:
 
 - `aws_bedrock_model_invocation_logging_configuration` (whether invocation logging is configured and which modalities are enabled)
 - The CloudWatch log group or S3 bucket that Bedrock writes to (retention, lifecycle, encryption, versioning)
@@ -25,15 +29,7 @@ The scanner is **deliberately conservative**: when it cannot prove a control is 
 
 > ### Important: this is a prerequisite, not a certificate of compliance
 >
-> A fully passing complyscan run is a **necessary but not sufficient** condition for EU AI Act Article 12 conformance. complyscan only verifies that a narrow set of AWS Bedrock logging primitives are **declared** in your Terraform. It does **not** evaluate:
->
-> - Non-AWS or non-Bedrock AI workloads (Azure OpenAI, Vertex AI, self-hosted models, SageMaker, etc.)
-> - Application-level event logging, prompt/response capture, decision traceability, or human-oversight records
-> - Whether deployed infrastructure actually emits logs, or whether logs are being retained, protected, and reviewed in practice
-> - Other Article 12 obligations around log content, integrity, retention duration relative to the system's intended purpose, and downstream-deployer access
-> - The remaining EU AI Act requirements outside Article 12 (risk management, data governance, technical documentation, conformity assessment, post-market monitoring, etc.)
->
-> Treat a green complyscan as evidence that the **infrastructure baseline** for Article 12 logging is in place. Full Article 12 (and EU AI Act) compliance still requires application-level controls, runtime verification, organisational processes, and legal review.
+> A fully passing `infrarails` run is a **necessary but not sufficient** condition for EU AI Act / NIST AI RMF / ISO 42001 conformance. `infrarails` only verifies that a narrow set of AWS Bedrock infrastructure primitives are **declared** in your Terraform. It does **not** evaluate organisational, procedural, application-level, or runtime controls. See the disclaimer at the bottom of every report for the full scope statement.
 
 ---
 
@@ -43,65 +39,68 @@ The scanner is **deliberately conservative**: when it cannot prove a control is 
 # 1. Install hcl2json (one-time, see Prerequisites)
 brew install hcl2json
 
-# 2. Install complyscan
-npm install -g complyscan
+# 2. Install infrarails
+npm install -g infrarails
 
 # 3. Scan a Terraform directory
-complyscan ./infra/
+infrarails ./infra/
+
+# 4. Or generate an HTML report
+infrarails ./infra/ --format html > report.html
 ```
 
 ---
 
 ## Rules
 
-`complyscan` ships **7 rules** mapped to Article 12 of the EU AI Act. Each finding is one of: **PASS**, **FAIL**, **WARN**, **SKIP**, or **INCONCLUSIVE**.
+`infrarails` ships **7 rules** mapped to Article 12 of the EU AI Act, with cross-references to NIST AI RMF and ISO/IEC 42001. Each finding is one of: **PASS**, **FAIL**, **WARN**, **SKIP**, or **INCONCLUSIVE**.
 
 | Rule ID | Severity | Phase | Check |
 |---|---|---|---|
 | `S-12.1.1` | FAIL | 1 | AWS Bedrock model invocation logging is configured when Bedrock is in use |
-| `S-12.1.2a` | FAIL | 2 | CloudWatch log group used for Bedrock logs has a retention policy ≥ 365 days |
-| `S-12.1.2b` | FAIL | 2 | S3 bucket used for Bedrock logs has a lifecycle policy ≥ 365 days |
+| `S-12.1.2a` | FAIL | 2 | CloudWatch log group used for Bedrock logs has a retention policy >= 365 days |
+| `S-12.1.2b` | FAIL | 2 | S3 bucket used for Bedrock logs has a lifecycle policy >= 365 days |
 | `S-12.x.1` | WARN | 2 | S3 log bucket has versioning (or object lock) enabled |
 | `S-12.x.2a` | WARN | 2 | S3 log bucket has KMS server-side encryption configured |
 | `S-12.x.4` | FAIL | 2 | A CloudTrail trail is present and enabled |
 | `S-12.x.5` | WARN | 2 | Flags remote modules whose contents the scanner cannot inspect |
 
-Retention thresholds: **WARN** at ≥ 180 days, **PASS** at ≥ 365 days.
+Retention thresholds: **WARN** at >= 180 days, **PASS** at >= 365 days.
 
 ---
 
 ## Architecture
 
-complyscan is a small, layered TypeScript pipeline. Each layer has a narrow contract, which makes the rule logic easy to read and the failure modes easy to reason about.
+`infrarails` is a small, layered TypeScript pipeline. Each layer has a narrow contract, which makes the rule logic easy to read and the failure modes easy to reason about.
 
 ```
-   ┌──────────────────┐
-   │  CLI (commander) │   src/index.ts - argv parsing, exit codes
-   └────────┬─────────┘
-            │
-   ┌────────▼─────────┐
-   │     Parser       │   src/parser.ts
-   │  .tf  → hcl2json │   recursively walks the directory, skips
-   │  .tf.json → JSON │   node_modules / vendor / examples / .* etc.
-   └────────┬─────────┘
-            │ ParsedFile[] (filePath, json, rawHcl)
-   ┌────────▼─────────┐
-   │     Resolver     │   src/resolver.ts
-   │  var / local /   │   classifies values as literal | address |
-   │  data / module   │   unresolvable (with a reason code)
-   └────────┬─────────┘
-            │
-   ┌────────▼─────────┐
-   │ Two-phase Runner │   src/runner.ts
-   │                  │
-   │  Phase 1 rules ──┼──► populate ScanContext via src/context.ts
-   │  Phase 2 rules ──┼──► consume ScanContext (bucket / log-group names,
-   │                  │    unresolved refs, strictAccountLogging flag)
-   └────────┬─────────┘
-            │ Finding[]
-   ┌────────▼─────────┐
-   │    Formatter     │   src/formatter.ts - terminal or JSON
-   └──────────────────┘
+   +------------------+
+   |  CLI (commander) |   src/index.ts - argv parsing, exit codes
+   +--------+---------+
+            |
+   +--------v---------+
+   |     Parser       |   src/parser.ts
+   |  .tf  -> hcl2json|   recursively walks the directory, skips
+   |  .tf.json -> JSON|   node_modules / vendor / examples / .* etc.
+   +--------+---------+
+            | ParsedFile[] (filePath, json, rawHcl)
+   +--------v---------+
+   |     Resolver     |   src/resolver.ts
+   |  var / local /   |   classifies values as literal | address |
+   |  data / module   |   unresolvable (with a reason code)
+   +--------+---------+
+            |
+   +--------v---------+
+   | Two-phase Runner |   src/runner.ts
+   |                  |
+   |  Phase 1 rules --+--> populate ScanContext via src/context.ts
+   |  Phase 2 rules --+--> consume ScanContext (bucket / log-group names,
+   |                  |    unresolved refs, strictAccountLogging flag)
+   +--------+---------+
+            | Finding[]
+   +--------v---------+
+   |    Formatter     |   src/formatter.ts - terminal, JSON, or HTML
+   +------------------+
 ```
 
 **Why two phases?** Most rules need to know *which buckets and log groups Bedrock is actually writing to* before they can check encryption, versioning, retention, etc. Phase 1 (currently just `S-12.1.1`) walks `aws_bedrock_model_invocation_logging_configuration` blocks and resolves their `bucket_name` / `log_group_name` fields into a `ScanContext`. Phase 2 rules use that context to scope their checks - e.g. `S-12.x.2a` only flags encryption gaps on buckets that are *actually* receiving Bedrock logs, not every bucket in the repo.
@@ -114,7 +113,7 @@ complyscan is a small, layered TypeScript pipeline. Each layer has a narrow cont
 | **address** | `aws_s3_bucket.logs.id` resolved to its `bucket` attribute | Use the resolved name |
 | **unresolvable** | `var.bucket_name` (no default), `data.aws_ssm_parameter.X.value`, `module.logging.bucket` | Emit `INCONCLUSIVE` instead of guessing |
 
-The unresolvable cases get categorized (`var-no-default`, `data-source-ssm`, `module-output`, …) so the finding message can tell the operator *why* the value couldn't be checked statically.
+The unresolvable cases get categorised (`var-no-default`, `data-source-ssm`, `module-output`, ...) so the finding message can tell the operator *why* the value couldn't be checked statically.
 
 ### Scanner directory traversal
 
@@ -131,9 +130,9 @@ Remote modules (registry, git, http) are not fetched - their contents are invisi
 
 ## Scenarios it can handle
 
-The hardest part of static compliance scanning isn't matching resource types - it's distinguishing *"this is genuinely missing"* from *"this lives somewhere I can't see."* complyscan handles both, and it tells you which one you're looking at.
+The hardest part of static compliance scanning isn't matching resource types - it's distinguishing *"this is genuinely missing"* from *"this lives somewhere I can't see."* `infrarails` handles both, and it tells you which one you're looking at.
 
-### Direct, in-file Bedrock + logging → PASS
+### Direct, in-file Bedrock + logging -> PASS
 
 Bedrock resource and `aws_bedrock_model_invocation_logging_configuration` in the same scanned tree, with at least one modality enabled (or all modality toggles unset, which is AWS's enable-all default).
 
@@ -146,9 +145,9 @@ resource "aws_bedrock_model_invocation_logging_configuration" "main" {
   }
 }
 ```
-→ `S-12.1.1: PASS`
+-> `S-12.1.1: PASS`
 
-### All modality toggles explicitly false → FAIL
+### All modality toggles explicitly false -> FAIL
 
 A logging resource exists but every `*_data_delivery_enabled` is `false`. AWS will accept this configuration, but no events will actually be written.
 
@@ -163,44 +162,29 @@ resource "aws_bedrock_model_invocation_logging_configuration" "main" {
   }
 }
 ```
-→ `S-12.1.1: FAIL - all data-delivery toggles set to false`
+-> `S-12.1.1: FAIL - all data-delivery toggles set to false`
 
-### Bedrock used, no logging in scanned files → INCONCLUSIVE (default) or FAIL (strict)
+### Bedrock used, no logging in scanned files -> INCONCLUSIVE (default) or FAIL (strict)
 
 By default, the scanner assumes account-baseline patterns are common (logging configured once at the org/account level, not per-stack) and emits `INCONCLUSIVE` so it doesn't generate false positives for teams with that topology. Pass `--strict-account-logging` to flip this to `FAIL` when you know the entire estate is in scope.
 
-### Cross-stack baseline logging → INCONCLUSIVE (with reason)
+### Cross-stack baseline logging -> INCONCLUSIVE (with reason)
 
 When the scanner sees Bedrock usage *and* hints that logging is wired up via another stack - a `data.terraform_remote_state.account_baseline.outputs.log_bucket` reference, a baseline-logging module call, or an input key like `log_bucket` / `bedrock_logs_bucket` on a module - it emits `INCONCLUSIVE` with the specific cross-stack pointer that triggered the decision. **This overrides `--strict-account-logging`**: when there is positive evidence of external logging, the scanner won't FAIL.
 
-```hcl
-resource "aws_bedrockagent_agent" "support_bot" { ... }
-
-data "terraform_remote_state" "account_baseline" {
-  backend = "s3"
-  config  = { ... }
-}
-
-resource "aws_s3_bucket_policy" "bedrock_logs" {
-  bucket = data.terraform_remote_state.account_baseline.outputs.log_bucket
-  policy = "{}"
-}
-```
-→ `S-12.1.1: INCONCLUSIVE - cross-stack reference to account_baseline.log_bucket suggests logging is configured externally`
-
-### Indirect-only Bedrock signals → always INCONCLUSIVE
+### Indirect-only Bedrock signals -> always INCONCLUSIVE
 
 IAM grants for `bedrock:*` actions, VPC endpoints to `bedrock-runtime`, or `aws_bedrock_foundation_model` data sources are *signals* that something nearby uses Bedrock - but the deploying resource may live in another stack entirely. These are never confident `FAIL`s, even under `--strict-account-logging`.
 
-### Local modules → scanned recursively
+### Local modules -> scanned recursively
 
 `module "bedrock_logging" { source = "./modules/bedrock_logging" }` is followed transparently - the module's `.tf` files are parsed alongside the root and contribute to the same context.
 
-### Remote modules → flagged, never scanned
+### Remote modules -> flagged, never scanned
 
 Registry, git, http, and bitbucket sources can't be inspected statically. `S-12.x.5` emits an `INCONCLUSIVE` per remote module so they show up in the report instead of being silently ignored. If your only Bedrock-related logic is inside a remote module, `S-12.1.1` also emits an INCONCLUSIVE rather than a misleading SKIP.
 
-### Variables, locals, and data sources → resolved when possible
+### Variables, locals, and data sources -> resolved when possible
 
 | Expression | Behavior |
 |---|---|
@@ -226,14 +210,14 @@ cdktf, Terragrunt, and various code generators emit Terraform configuration as J
 ### Command
 
 ```bash
-complyscan <directory> [options]
+infrarails <directory> [options]
 ```
 
 ### Options
 
 | Flag | Default | Description |
 |---|---|---|
-| `-f, --format <format>` | `terminal` | Output format: `terminal` or `json` |
+| `-f, --format <format>` | `terminal` | Output format: `terminal`, `json`, or `html` |
 | `--no-strict` | strict on | Treat `INCONCLUSIVE` findings as non-blocking. By default INCONCLUSIVE blocks the exit code like FAIL - for a compliance tool, "we couldn't verify" should not pass a CI gate silently. |
 | `--strict-account-logging` | off | When set, missing `aws_bedrock_model_invocation_logging_configuration` is treated as `FAIL` instead of `INCONCLUSIVE`. Use this only when the scanned tree is the entire infra estate (no separate account-baseline stack). External-logging hints still downgrade to INCONCLUSIVE. |
 | `--version` | - | Print version |
@@ -243,19 +227,19 @@ complyscan <directory> [options]
 
 ```bash
 # Scan a Terraform module, human-readable output
-complyscan ./infra/
+infrarails ./infra/
 
-# Scan and output machine-readable JSON
-complyscan ./infra/ --format json
+# Generate an HTML report (with collapsible sections, framework pills, disclaimer)
+infrarails ./infra/ --format html > report.html
+
+# Output machine-readable JSON for CI/CD
+infrarails ./infra/ --format json | tee compliance-report.json
 
 # Non-strict mode (INCONCLUSIVE will not block CI)
-complyscan ./infra/ --no-strict
+infrarails ./infra/ --no-strict
 
 # Strict account-logging - fail when Bedrock is used but no logging config is in the tree
-complyscan ./infra/ --strict-account-logging
-
-# Use in a CI pipeline and persist the report
-complyscan ./infra/ --format json | tee compliance-report.json
+infrarails ./infra/ --strict-account-logging
 ```
 
 ### Exit codes
@@ -270,7 +254,7 @@ complyscan ./infra/ --format json | tee compliance-report.json
 
 ## Prerequisites
 
-`complyscan` converts Terraform HCL to JSON internally using [`hcl2json`](https://github.com/tmccombs/hcl2json). Install it before running:
+`infrarails` converts Terraform HCL to JSON internally using [`hcl2json`](https://github.com/tmccombs/hcl2json). Install it before running:
 
 ```bash
 # macOS
@@ -289,39 +273,62 @@ brew install hcl2json
 ### From npm (recommended)
 
 ```bash
-npm install -g complyscan
+npm install -g infrarails
 ```
 
 ### From source
 
 ```bash
-git clone https://github.com/your-org/complyscan.git
-cd complyscan
+git clone https://github.com/your-org/infrarails.git
+cd infrarails
 npm install
 npm run build
-npm link   # makes `complyscan` available globally
+npm link   # makes `infrarails` available globally
 ```
 
 ---
 
-## Output
+## Output formats
 
 ### Terminal (default)
 
+Colour-coded, grouped by status, with framework cross-references on each finding:
+
 ```
-complyscan - EU AI Act Article 12 Compliance Scan
-──────────────────────────────────────────────────
+infrarails - Compliance Report
+EU AI Act Article 12  ·  NIST AI RMF  ·  ISO/IEC 42001
 
-✓ [PASS] S-12.1.1  Bedrock invocation logging is configured (main).
-✓ [PASS] S-12.1.2a CloudWatch log group /aws/bedrock/prod has a retention policy (365 days).
-✓ [PASS] S-12.1.2b S3 bucket prod-ai-audit-logs has a lifecycle policy.
-✓ [PASS] S-12.x.1  S3 bucket prod-ai-audit-logs has versioning enabled.
-✓ [PASS] S-12.x.2a S3 bucket prod-ai-audit-logs has server-side encryption configured.
-✗ [FAIL] S-12.x.4  No aws_cloudtrail resource found.
-          Remediation: Add an aws_cloudtrail resource with enable_logging = true.
+1 passed   1 failed   0 warnings   1 inconclusive   3 skipped
 
-────────────────────────────────────────────────────────
-Summary: 6 checks | 1 FAIL | 0 WARN | 5 PASS | 0 SKIP | 0 INCONCLUSIVE
+- FAIL (1) -
+
+✗ S-12.1.2a  CloudWatch log group "/aws/bedrock/model-invocation-logs" has no retention_in_days declared.
+   ./infra/bedrock/main.tf:23
+   → Set retention_in_days explicitly: a value >= 180 (recommended: 365)...
+   EU Article 12(1)  ·  NIST MANAGE 4.1, MANAGE 4.3, MEASURE 3.2  ·  ISO A.6.2.8, A.6.2.6
+
+- INCONCLUSIVE (1) -
+
+? S-12.x.4  No aws_cloudtrail found in scanned files...
+   → Verify CloudTrail is enabled in your AWS account...
+   EU Article 12  ·  NIST MANAGE 4.1, GOVERN 1.4, MEASURE 2.7  ·  ISO A.6.2.8, A.3.3
+
+Disclaimer: This report reflects the findings of an automated static analysis...
+```
+
+### HTML
+
+Self-contained, single-file HTML report with:
+
+- Summary bar with counts per status
+- Collapsible sections per status (FAIL/WARN/INCONCLUSIVE expanded by default; PASS/SKIP collapsed)
+- Coloured framework pills (EU / NIST / ISO) with hover tooltips showing the full control description
+- Print-friendly CSS (collapsed sections hidden, no shadows)
+- Full disclaimer block at the bottom
+
+```bash
+infrarails ./infra/ --format html > report.html
+open report.html
 ```
 
 ### JSON
@@ -330,20 +337,21 @@ Summary: 6 checks | 1 FAIL | 0 WARN | 5 PASS | 0 SKIP | 0 INCONCLUSIVE
 {
   "summary": {
     "total": 6,
-    "pass": 5,
+    "pass": 1,
     "fail": 1,
     "warn": 0,
-    "skip": 0,
-    "inconclusive": 0
+    "skip": 3,
+    "inconclusive": 1
   },
   "findings": [
     {
-      "ruleId": "S-12.x.4",
+      "ruleId": "S-12.1.2a",
       "status": "FAIL",
-      "severity": "FAIL",
-      "message": "No aws_cloudtrail resource found.",
-      "remediation": "Add an aws_cloudtrail resource with enable_logging = true.",
-      "regulatoryReference": "EU AI Act Article 12"
+      "description": "CloudWatch log group ... has no retention_in_days declared.",
+      "remediation": "Set retention_in_days explicitly...",
+      "regulatoryReference": "EU AI Act Article 12(1) - Logs retained for appropriate period",
+      "nistReference": "NIST AI RMF: MANAGE 4.1 (post-deployment monitoring); MANAGE 4.3 (incident communication); MEASURE 3.2 (risk tracking)",
+      "isoReference": "ISO/IEC 42001:2023 Annex A: A.6.2.8 (AI system event logs); A.6.2.6 (operation and monitoring)"
     }
   ]
 }
@@ -351,22 +359,27 @@ Summary: 6 checks | 1 FAIL | 0 WARN | 5 PASS | 0 SKIP | 0 INCONCLUSIVE
 
 ---
 
-## CI Integration
+## CI integration
 
 ### GitHub Actions
 
 ```yaml
 - name: Compliance scan
   run: |
-    npm install -g complyscan
-    complyscan ./infra/ --format json | tee compliance-report.json
+    npm install -g infrarails
+    infrarails ./infra/ --format json | tee compliance-report.json
   continue-on-error: false
 
-- name: Upload compliance report
+- name: Upload HTML report
+  run: infrarails ./infra/ --format html > report.html
+
+- name: Upload artifacts
   uses: actions/upload-artifact@v4
   with:
     name: compliance-report
-    path: compliance-report.json
+    path: |
+      compliance-report.json
+      report.html
 ```
 
 ### GitLab CI
@@ -375,11 +388,13 @@ Summary: 6 checks | 1 FAIL | 0 WARN | 5 PASS | 0 SKIP | 0 INCONCLUSIVE
 compliance:
   stage: validate
   script:
-    - npm install -g complyscan
-    - complyscan ./infra/ --format json | tee compliance-report.json
+    - npm install -g infrarails
+    - infrarails ./infra/ --format json | tee compliance-report.json
+    - infrarails ./infra/ --format html > report.html
   artifacts:
     paths:
       - compliance-report.json
+      - report.html
 ```
 
 ### Recommendation for CI gates
@@ -397,23 +412,23 @@ Once Sprint 1B (`--plan` mode) lands, scanning Terraform plan JSON eliminates mo
 
 | Sprint | Status | Scope |
 |---|---|---|
-| **1A** | ✅ Done | Terraform HCL/JSON source scanning - 7 Article 12 rules, value resolver, two-phase engine, cross-stack/local-module detection |
-| **1B** | 🔄 In progress | `--plan` mode: scan `terraform show -json` plan/state output - eliminates `INCONCLUSIVE` for CI gates |
-| **1C** | Planned | CDK and CloudFormation support; additional FR-2 checks |
+| **1A** | Done | Terraform HCL/JSON source scanning - 7 rules, value resolver, two-phase engine, cross-stack/local-module detection, NIST + ISO cross-references, terminal/JSON/HTML outputs |
+| **1B** | In progress | `--plan` mode: scan `terraform show -json` plan/state output - eliminates `INCONCLUSIVE` for CI gates |
+| **1C** | Planned | CDK and CloudFormation support; Bedrock Agent guardrail rules; additional FR-2 checks |
 
 ### Sprint 1B preview - plan/state mode
 
-Once 1B lands, `complyscan` will accept Terraform plan JSON as input. Because plan output contains fully-resolved values (no variables, no unbuilt module outputs), this eliminates most `INCONCLUSIVE` findings and is the recommended path for CI compliance gates.
+Once 1B lands, `infrarails` will accept Terraform plan JSON as input. Because plan output contains fully-resolved values (no variables, no unbuilt module outputs), this eliminates most `INCONCLUSIVE` findings and is the recommended path for CI compliance gates.
 
 ```bash
 # Pre-deployment gate (recommended CI workflow)
 terraform plan -out=plan.tfplan
 terraform show -json plan.tfplan > plan.json
-complyscan --plan plan.json --format json
+infrarails --plan plan.json --format json
 
 # Post-deployment audit
 terraform show -json > state.json
-complyscan --plan state.json --mode post --format json
+infrarails --plan state.json --mode post --format json
 ```
 
 ---
@@ -431,7 +446,7 @@ Contributions are welcome. Please open an issue before submitting a pull request
 
 ### Adding a new rule
 
-Each rule lives in `src/rules/` and implements the `ScanRule` interface from `src/types.ts`. The rule ID should follow the `S-12.x.y` naming convention and include a `regulatoryReference` mapping to the specific Article 12 sub-clause. Register the new rule in [src/rules/index.ts](src/rules/index.ts).
+Each rule lives in `src/rules/` and implements the `ScanRule` interface from `src/types.ts`. The rule ID should follow the `S-12.x.y` naming convention and include `regulatoryReference`, `nistReference`, and `isoReference` strings mapping to the specific controls. Register the new rule in [src/rules/index.ts](src/rules/index.ts).
 
 Set `phase1: true` only if the rule needs to populate `ScanContext` for other rules to consume (currently just `S-12.1.1`). Most new rules should be phase 2 - they read context built in phase 1 and inspect specific resource types.
 
@@ -449,4 +464,6 @@ You may use, distribute, and modify this software under the terms of the Apache 
 
 ## Disclaimer
 
-`complyscan` is a static analysis tool. A fully passing scan means your Terraform configuration **declares** the required AWS Bedrock logging controls - it does not verify that deployed infrastructure is operating correctly, that log data is actually being written, or that your system meets all requirements of the EU AI Act in its entirety. complyscan covers a single slice of Article 12 (AWS Bedrock infrastructure-level logging) and is a **prerequisite for**, not a **substitute for**, full Article 12 compliance. Always combine static scanning with runtime monitoring, application-level traceability, organisational controls, and legal review.
+This report reflects the findings of an automated static analysis of your AWS AI infrastructure configuration against selected controls from the **EU AI Act**, **NIST AI RMF**, and **ISO/IEC 42001**. A passing result indicates that the scanned Terraform configuration satisfies the specific infrastructure-layer prerequisite checked - it does not constitute compliance with any of these frameworks, nor does it substitute for a formal audit, certification, or conformity assessment conducted by an accredited body.
+
+Compliance with the EU AI Act, NIST AI RMF, and ISO/IEC 42001 requires organisational, procedural, and governance measures that are outside the scope of infrastructure scanning. This report should be treated as a **pre-audit readiness input**, not an attestation of conformance.

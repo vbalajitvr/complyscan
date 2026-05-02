@@ -20,10 +20,12 @@ const MODALITY_TOGGLES = [
   'video_data_delivery_enabled',
 ];
 
-const REGULATORY_REFERENCE = 'EU AI Act Article 12(1) — Automatic logging of events';
+const REGULATORY_REFERENCE = 'EU AI Act Article 12(1) - Automatic logging of events';
+const NIST_REFERENCE = 'NIST AI RMF 1.0: GOVERN 1.4 (transparent risk-management policies); MEASURE 2.7 (security and resilience); MANAGE 4.1 (post-deployment monitoring plans)';
+const ISO_REFERENCE = 'ISO/IEC 42001:2023 Annex A: A.6.2.8 (AI system event logs); A.6.2.6 (AI system operation and monitoring)';
 
 const RUN_PLAN_HINT =
-  'Run complyscan against "terraform show -json plan.json" for full apply-time resolution, or scan the stack/module that defines the missing pieces.';
+  'Run infrarails against "terraform show -json plan.json" for full apply-time resolution, or scan the stack/module that defines the missing pieces.';
 
 interface DirectUsage {
   resourceAddress: string;
@@ -48,14 +50,19 @@ export const bedrockLoggingRule: ScanRule = {
   description: 'Bedrock model invocation logging must be configured when Bedrock is in use',
   severity: 'FAIL',
   regulatoryReference: REGULATORY_REFERENCE,
+  nistReference: NIST_REFERENCE,
+  isoReference: ISO_REFERENCE,
   phase1: true,
 
   run(files: ParsedFile[], context: ScanContext): Finding[] {
     const configs = findResources(files, 'aws_bedrock_model_invocation_logging_configuration');
+    const agentResources = findResources(files, 'aws_bedrockagent_agent');
+    const hasAgent = agentResources.length > 0;
+    const agentNames = agentResources.map((a) => a.name);
 
-    // Case A — logging config present in scanned files. PASS / modality-FAIL.
+    // Case A - logging config present in scanned files. PASS / modality-FAIL.
     if (configs.length > 0) {
-      return configs.map((config) => evaluateLoggingConfig(config));
+      return configs.map((config) => evaluateLoggingConfig(config, hasAgent, agentNames));
     }
 
     const direct: DirectUsage[] = findBedrockResources(files).map((r) => ({
@@ -79,7 +86,7 @@ export const bedrockLoggingRule: ScanRule = {
     const hasHint =
       hint.modules.length > 0 || hint.baselineState.length > 0 || hint.loggingRefs.length > 0;
 
-    // Case B — no Bedrock signals at all.
+    // Case B - no Bedrock signals at all.
     if (!hasDirect && !hasIndirect) {
       const remoteModules = findRemoteModules(files);
       if (remoteModules.length === 0) {
@@ -91,40 +98,46 @@ export const bedrockLoggingRule: ScanRule = {
             description: 'No Bedrock resources detected. Invocation logging check skipped.',
             remediation: '',
             regulatoryReference: REGULATORY_REFERENCE,
+            nistReference: NIST_REFERENCE,
+            isoReference: ISO_REFERENCE,
           },
         ];
       }
       return [buildRemoteModuleInconclusive(this.id, remoteModules, hint)];
     }
 
-    // Case C — usage present (direct or indirect) and an external-logging hint
+    // Case C - usage present (direct or indirect) and an external-logging hint
     // says logging may be wired up elsewhere. Always INCONCLUSIVE, regardless
-    // of strict mode — we do not have enough evidence to FAIL.
+    // of strict mode - we do not have enough evidence to FAIL.
     if (hasHint) {
-      return [buildExternalHintInconclusive(this.id, direct, indirect, hint)];
+      return [buildExternalHintInconclusive(this.id, direct, indirect, hint, hasAgent, agentNames)];
     }
 
-    // Case D — only indirect signals (IAM / VPC / data source) and no logging.
-    // Indirect-only is never a confident FAIL — the deploying resource may be
+    // Case D - only indirect signals (IAM / VPC / data source) and no logging.
+    // Indirect-only is never a confident FAIL - the deploying resource may be
     // in another stack. Always INCONCLUSIVE.
     if (!hasDirect) {
       return [buildIndirectOnlyInconclusive(this.id, indirect)];
     }
 
-    // Case E — direct usage, no logging, no external hint.
+    // Case E - direct usage, no logging, no external hint.
     if (context.strictAccountLogging) {
-      return [buildStrictModeFail(this.id, direct, indirect)];
+      return [buildStrictModeFail(this.id, direct, indirect, hasAgent, agentNames)];
     }
-    return [buildPermissiveInconclusive(this.id, direct, indirect)];
+    return [buildPermissiveInconclusive(this.id, direct, indirect, hasAgent, agentNames)];
   },
 };
 
-function evaluateLoggingConfig(config: {
-  name: string;
-  body: Record<string, unknown>;
-  filePath: string;
-  rawHcl: string;
-}): Finding {
+function evaluateLoggingConfig(
+  config: {
+    name: string;
+    body: Record<string, unknown>;
+    filePath: string;
+    rawHcl: string;
+  },
+  hasAgent: boolean,
+  agentNames: string[],
+): Finding {
   const line = findResourceLine(
     config.rawHcl,
     'aws_bedrock_model_invocation_logging_configuration',
@@ -146,26 +159,46 @@ function evaluateLoggingConfig(config: {
       status: 'FAIL',
       filePath: config.filePath,
       line,
-      description: `Bedrock logging resource "${config.name}" exists but every *_data_delivery_enabled toggle is set to false — AWS will accept this configuration, but no invocations will actually be written.`,
+      description: `Bedrock logging resource "${config.name}" exists but every *_data_delivery_enabled toggle is set to false - AWS will accept this configuration, but no invocations will actually be written.`,
       remediation:
         `Set at least one of ${MODALITY_TOGGLES.join(', ')} to true on logging_config ` +
-        `(or remove the toggles entirely — when unset, AWS enables all modalities by default). ` +
-        `Why: this is one of the most common Article 12 failure modes — the resource exists, ` +
+        `(or remove the toggles entirely - when unset, AWS enables all modalities by default). ` +
+        `Why: this is one of the most common Article 12 failure modes - the resource exists, ` +
         `Terraform applies cleanly, dashboards look "configured", but the log destination ` +
-        `stays empty. Verify with the AWS console or "aws bedrock get-model-invocation-logging-configuration".`,
+        `stays empty. Verify with the AWS console or "aws bedrock get-model-invocation-logging-configuration".` +
+        agentRemediationAddendum(hasAgent, agentNames),
       regulatoryReference: REGULATORY_REFERENCE,
+      nistReference: NIST_REFERENCE,
+      isoReference: ISO_REFERENCE,
     };
   }
+
+  const passDescription = hasAgent
+    ? `Bedrock invocation logging is configured (${config.name}). Note: Bedrock Agent(s) detected (${agentNames.join(', ')}) - this captures the model leg only. Verify enableTrace=true is set on InvokeAgent calls and that action-group Lambdas have their own log groups for full Article 12 trace coverage.`
+    : `Bedrock invocation logging is configured (${config.name}).`;
 
   return {
     ruleId: 'S-12.1.1',
     status: 'PASS',
     filePath: config.filePath,
     line,
-    description: `Bedrock invocation logging is configured (${config.name}).`,
+    description: passDescription,
     remediation: '',
     regulatoryReference: REGULATORY_REFERENCE,
+    nistReference: NIST_REFERENCE,
+    isoReference: ISO_REFERENCE,
   };
+}
+
+function agentRemediationAddendum(hasAgent: boolean, agentNames: string[]): string {
+  if (!hasAgent) return '';
+  return (
+    ` Bedrock Agent(s) detected (${agentNames.join(', ')}): aws_bedrock_model_invocation_logging_configuration ` +
+    `captures only the model leg of an InvokeAgent call. To meet Article 12 for agents you also need (a) trace ` +
+    `logging enabled per call (enableTrace=true on InvokeAgent - this is application-level, not Terraform), and ` +
+    `(b) CloudWatch log groups for any action-group Lambda functions, retained at the same horizon as model logs. ` +
+    `Without trace logs, reasoning steps, action-group invocations, and knowledge-base retrievals are not auditable.`
+  );
 }
 
 function buildRemoteModuleInconclusive(
@@ -191,6 +224,8 @@ function buildRemoteModuleInconclusive(
     description: `No Bedrock resources found in scanned files, but remote module(s) ${names} could not be inspected. Bedrock usage and logging config may be defined inside those modules.${extra}`,
     remediation: RUN_PLAN_HINT,
     regulatoryReference: REGULATORY_REFERENCE,
+    nistReference: NIST_REFERENCE,
+    isoReference: ISO_REFERENCE,
   };
 }
 
@@ -199,6 +234,8 @@ function buildExternalHintInconclusive(
   direct: DirectUsage[],
   indirect: IndirectUsage,
   hint: ExternalLoggingHint,
+  hasAgent: boolean,
+  agentNames: string[],
 ): Finding {
   const usageSummary = describeUsage(direct, indirect);
   const hintParts: string[] = [];
@@ -228,8 +265,10 @@ function buildExternalHintInconclusive(
     status: 'INCONCLUSIVE',
     filePath: '',
     description: `${usageSummary} No aws_bedrock_model_invocation_logging_configuration in scanned files, but ${hintParts.join(' and ')} suggest logging is configured externally. Compliance cannot be verified from these files alone.`,
-    remediation: RUN_PLAN_HINT,
+    remediation: RUN_PLAN_HINT + agentRemediationAddendum(hasAgent, agentNames),
     regulatoryReference: REGULATORY_REFERENCE,
+    nistReference: NIST_REFERENCE,
+    isoReference: ISO_REFERENCE,
   };
 }
 
@@ -242,6 +281,8 @@ function buildIndirectOnlyInconclusive(ruleId: string, indirect: IndirectUsage):
     description: `${usageSummary} No aws_bedrock_* resource and no logging config detected in scanned files. The deploying resource and logging may live in another stack.`,
     remediation: RUN_PLAN_HINT,
     regulatoryReference: REGULATORY_REFERENCE,
+    nistReference: NIST_REFERENCE,
+    isoReference: ISO_REFERENCE,
   };
 }
 
@@ -249,6 +290,8 @@ function buildStrictModeFail(
   ruleId: string,
   direct: DirectUsage[],
   indirect: IndirectUsage,
+  hasAgent: boolean,
+  agentNames: string[],
 ): Finding {
   const usageSummary = describeUsage(direct, indirect);
   return {
@@ -258,13 +301,16 @@ function buildStrictModeFail(
     description: `${usageSummary} No aws_bedrock_model_invocation_logging_configuration is defined in scanned files. (Strict account-logging mode: missing logging treated as FAIL.)`,
     remediation:
       'Add an aws_bedrock_model_invocation_logging_configuration resource pointing at a ' +
-      'CloudWatch log group or S3 bucket — and enable at least one of text_data_delivery_enabled, ' +
+      'CloudWatch log group or S3 bucket - and enable at least one of text_data_delivery_enabled, ' +
       'image_data_delivery_enabled, embedding_data_delivery_enabled, or video_data_delivery_enabled. ' +
       'Why: Article 12(1) mandates *automatic* recording of events throughout the AI system\'s ' +
       'operational lifetime. Without invocation logging, you have no record of what prompts were ' +
-      'sent, what responses were returned, or which model version produced them — making bias ' +
-      'investigation, hallucination forensics, and downstream-deployer audits impossible.',
+      'sent, what responses were returned, or which model version produced them - making bias ' +
+      'investigation, hallucination forensics, and downstream-deployer audits impossible.' +
+      agentRemediationAddendum(hasAgent, agentNames),
     regulatoryReference: REGULATORY_REFERENCE,
+    nistReference: NIST_REFERENCE,
+    isoReference: ISO_REFERENCE,
   };
 }
 
@@ -272,6 +318,8 @@ function buildPermissiveInconclusive(
   ruleId: string,
   direct: DirectUsage[],
   indirect: IndirectUsage,
+  hasAgent: boolean,
+  agentNames: string[],
 ): Finding {
   const usageSummary = describeUsage(direct, indirect);
   return {
@@ -279,8 +327,10 @@ function buildPermissiveInconclusive(
     status: 'INCONCLUSIVE',
     filePath: '',
     description: `${usageSummary} No aws_bedrock_model_invocation_logging_configuration found in scanned files, and no cross-stack logging evidence was detected. If logging is configured in a separate stack, scan that directory too. Pass --strict-account-logging if this directory covers the entire infra estate and missing logging should be treated as FAIL.`,
-    remediation: RUN_PLAN_HINT,
+    remediation: RUN_PLAN_HINT + agentRemediationAddendum(hasAgent, agentNames),
     regulatoryReference: REGULATORY_REFERENCE,
+    nistReference: NIST_REFERENCE,
+    isoReference: ISO_REFERENCE,
   };
 }
 

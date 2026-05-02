@@ -25,7 +25,7 @@ export function resolveExpression(
 ): ResolutionResult | undefined {
   if (typeof expr !== 'string') return undefined;
 
-  // Pure literal — no interpolation, no bare ref syntax
+  // Pure literal - no interpolation, no bare ref syntax
   if (!expr.includes('${') && !looksLikeBareRef(expr)) {
     return { kind: 'literal', value: expr };
   }
@@ -45,7 +45,7 @@ export function resolveExpression(
     return resolveAwsRef(resourceType, resourceName, attribute, files);
   }
 
-  // var.X — resolve via variable default if present, scoped to the origin module directory
+  // var.X - resolve via variable default if present, scoped to the origin module directory
   const varMatch = inner.match(VAR_REF);
   if (varMatch) {
     const value = resolveVariableDefault(varMatch[1], files, sourceFilePath);
@@ -53,7 +53,7 @@ export function resolveExpression(
     return { kind: 'unresolvable', expression: expr, reason: 'var-no-default', sourceField };
   }
 
-  // local.X — resolve via locals block if value is a literal, scoped to the origin module directory
+  // local.X - resolve via locals block if value is a literal, scoped to the origin module directory
   const localMatch = inner.match(LOCAL_REF);
   if (localMatch) {
     const value = resolveLocal(localMatch[1], files, sourceFilePath);
@@ -61,7 +61,7 @@ export function resolveExpression(
     return { kind: 'unresolvable', expression: expr, reason: 'local-not-literal', sourceField };
   }
 
-  // data.<type>.<name>.<attr> — runtime-only
+  // data.<type>.<name>.<attr> - runtime-only
   const dataMatch = inner.match(DATA_REF);
   if (dataMatch) {
     const reason: UnresolvableReason =
@@ -117,7 +117,7 @@ function resolveAwsRef(
     }
   }
 
-  // Resource not present in scanned files — still return its address so downstream
+  // Resource not present in scanned files - still return its address so downstream
   // matching by address can succeed if the resource is defined elsewhere.
   return { kind: 'address', value: `${resourceType}.${resourceName}`, resourceType, resourceName };
 }
@@ -166,7 +166,7 @@ function resolveLocal(
 export function explainReason(reason: UnresolvableReason): string {
   switch (reason) {
     case 'var-no-default':
-      return 'Terraform variable has no static default — value is supplied at apply time.';
+      return 'Terraform variable has no static default - value is supplied at apply time.';
     case 'local-not-literal':
       return 'local value is not a static string literal.';
     case 'data-source-ssm':
@@ -176,7 +176,7 @@ export function explainReason(reason: UnresolvableReason): string {
     case 'module-output':
       return 'value comes from a module output and is not visible to source-level scanning.';
     case 'complex-interpolation':
-      return 'expression combines multiple references — cannot determine final value statically.';
+      return 'expression combines multiple references - cannot determine final value statically.';
     case 'unknown-format':
       return 'expression is not in a recognized Terraform reference form.';
   }
