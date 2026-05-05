@@ -15,6 +15,10 @@ program
   .argument('<directory>', 'Directory containing Terraform .tf files')
   .option('-f, --format <format>', 'Output format: terminal, json, or html', 'terminal')
   .option(
+    '-o, --output <file>',
+    'Write the report to a file instead of stdout. Useful for html/json formats so you do not have to shell-redirect.',
+  )
+  .option(
     '--no-strict',
     'Treat INCONCLUSIVE findings as non-blocking (do not affect exit code). Default is strict: INCONCLUSIVE blocks like FAIL/WARN.',
   )
@@ -25,7 +29,7 @@ program
   )
   .action((
     directory: string,
-    options: { format: string; strict: boolean; strictAccountLogging: boolean },
+    options: { format: string; output?: string; strict: boolean; strictAccountLogging: boolean },
   ) => {
     // Check hcl2json is installed
     ensureHcl2Json();
@@ -50,12 +54,33 @@ program
     });
 
     // Format output
+    let rendered: string;
     if (options.format === 'json') {
-      console.log(formatJson(findings));
+      rendered = formatJson(findings);
     } else if (options.format === 'html') {
-      console.log(formatHtml(findings));
+      rendered = formatHtml(findings);
     } else {
-      console.log(formatTerminal(findings));
+      rendered = formatTerminal(findings);
+    }
+
+    if (options.output) {
+      const outPath = path.resolve(options.output);
+      fs.writeFileSync(outPath, rendered, 'utf-8');
+      console.error(`Report written to ${outPath}`);
+    } else {
+      console.log(rendered);
+      // Footgun guard: if user asked for html/json without -o and stdout is a TTY,
+      // they probably forgot to redirect and just dumped raw markup into the
+      // terminal. Print a one-line tip to stderr so it does not contaminate
+      // piped output.
+      if (
+        (options.format === 'html' || options.format === 'json') &&
+        process.stdout.isTTY
+      ) {
+        console.error(
+          `\nTip: pass -o report.${options.format} to save the report to a file instead of printing to the terminal.`,
+        );
+      }
     }
 
     // Exit code: 1 for FAIL/WARN, plus INCONCLUSIVE in strict mode (default).

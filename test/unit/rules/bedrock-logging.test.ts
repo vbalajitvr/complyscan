@@ -160,7 +160,7 @@ describe('S-12.1.1 Bedrock Logging', () => {
 
     expect(findings).toHaveLength(1);
     expect(findings[0].status).toBe('FAIL');
-    expect(findings[0].description).toMatch(/all data-delivery toggles/i);
+    expect(findings[0].description).toMatch(/every .*_data_delivery_enabled toggle is set to false/i);
   });
 
   it('should emit INCONCLUSIVE (not SKIP) when no Bedrock found but remote modules exist', () => {

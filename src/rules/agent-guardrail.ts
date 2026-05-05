@@ -14,9 +14,27 @@ const RATIONALE =
   'Bedrock Guardrails are the AWS-native enforcement point for content filters, denied topics, PII ' +
   'redaction, and grounding checks. An agent without a guardrail in production has no Article 9 control surface.';
 
+// Static-scan scope note used in every non-PASS finding for this rule.
+// Bedrock Guardrails attach to two surfaces: (1) Bedrock Agents via the
+// guardrail_configuration block in HCL - the only place a static scanner can
+// verify attachment; (2) raw InvokeModel / Converse SDK calls via the
+// guardrailIdentifier parameter - this is application code, not Terraform, so
+// the scanner cannot see it. This rule only covers (1). Coverage of (2) lives
+// at the application layer (code review, SDK linting, runtime tracing) and at
+// the org layer (sibling rule S-9.x.2 detects "Bedrock is used but no
+// aws_bedrock_guardrail is declared anywhere in scanned files" as a weaker
+// presence signal).
+const SCOPE_NOTE =
+  'Scope: this rule only verifies Agent-attached guardrails. For raw ' +
+  'InvokeModel / Converse SDK calls, the guardrailIdentifier parameter is ' +
+  'passed in application code and is not verifiable from Terraform - verify ' +
+  'SDK call sites separately. See also rule S-9.x.2 for guardrail-presence ' +
+  'detection across the scanned Terraform.';
+
 export const agentGuardrailRule: ScanRule = {
   id: 'S-9.x.1',
-  description: 'Bedrock Agents must have a versioned guardrail attached',
+  description:
+    'Bedrock Agents must have a versioned guardrail attached (Agent-attached guardrails only - raw InvokeModel/Converse SDK calls are out of scope for static IaC scanning)',
   severity: 'FAIL',
   regulatoryReference: REGULATORY_REFERENCE,
   nistReference: NIST_REFERENCE,
@@ -55,7 +73,7 @@ export const agentGuardrailRule: ScanRule = {
             'Add a guardrail_configuration block to aws_bedrockagent_agent referencing an ' +
             'aws_bedrock_guardrail (with guardrail_identifier set to the guardrail ID and ' +
             'guardrail_version pinned to a numbered version, not "DRAFT"). ' +
-            `Why: ${RATIONALE}`,
+            `Why: ${RATIONALE} ${SCOPE_NOTE}`,
           regulatoryReference: REGULATORY_REFERENCE,
           nistReference: NIST_REFERENCE,
           isoReference: ISO_REFERENCE,
@@ -77,7 +95,7 @@ export const agentGuardrailRule: ScanRule = {
           description: `Bedrock Agent "${agent.name}" declares guardrail_configuration but guardrail_identifier is empty or unset - no guardrail is actually attached.`,
           remediation:
             'Set guardrail_identifier to the ID (or ARN) of an aws_bedrock_guardrail resource. ' +
-            `Why: ${RATIONALE}`,
+            `Why: ${RATIONALE} ${SCOPE_NOTE}`,
           regulatoryReference: REGULATORY_REFERENCE,
           nistReference: NIST_REFERENCE,
           isoReference: ISO_REFERENCE,
@@ -95,7 +113,7 @@ export const agentGuardrailRule: ScanRule = {
             'Pin guardrail_version to a numbered version (e.g. "1", "2") published from an ' +
             'aws_bedrock_guardrail_version resource. DRAFT versions can be edited in place, so ' +
             'a passing audit today can be a failing one tomorrow with no Terraform diff. ' +
-            `Why: ${RATIONALE}`,
+            `Why: ${RATIONALE} ${SCOPE_NOTE}`,
           regulatoryReference: REGULATORY_REFERENCE,
           nistReference: NIST_REFERENCE,
           isoReference: ISO_REFERENCE,

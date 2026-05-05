@@ -1,6 +1,6 @@
 # infrarails
 
-> Static compliance scanner for AWS AI infrastructure - checks your Terraform for the logging, retention, and traceability gaps that surface at audit time, mapped to **EU AI Act Article 12**, **NIST AI RMF**, and **ISO/IEC 42001**.
+> Static compliance scanner for AWS AI infrastructure - checks your Terraform for the risk-management (Article 9 - Bedrock Guardrails) and logging, retention, and traceability (Article 12) gaps that surface at audit time, mapped to **EU AI Act**, **NIST AI RMF**, and **ISO/IEC 42001**.
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![npm version](https://img.shields.io/npm/v/infrarails.svg)](https://www.npmjs.com/package/infrarails)
@@ -14,16 +14,18 @@
 
 Each finding is cross-referenced against three frameworks:
 
-- **EU AI Act** (Regulation 2024/1689) - Article 12 logging and traceability
-- **NIST AI RMF 1.0** - GOVERN / MEASURE / MANAGE functions
-- **ISO/IEC 42001:2023** - Annex A controls (A.6.2.x event logging, A.7.x data quality)
+- **EU AI Act** (Regulation 2024/1689) - Article 9 (risk management for high-risk AI) and Article 12 (logging and traceability)
+- **NIST AI RMF 1.0** - GOVERN / MEASURE / MANAGE / MAP functions
+- **ISO/IEC 42001:2023** - Annex A controls (A.6.1.x objectives, A.6.2.x event logging / verification / deployment)
 
-Concretely, the scanner inspects Terraform for the AWS primitives that back AI logging on Bedrock:
+Concretely, the scanner inspects Terraform for the AWS primitives that back AI risk management and logging on Bedrock:
 
+- `aws_bedrockagent_agent` (whether a guardrail is attached, with a numbered version rather than DRAFT)
+- `aws_bedrock_guardrail` / `aws_bedrock_guardrail_version` (presence in the scanned tree when any Bedrock workload is detected)
 - `aws_bedrock_model_invocation_logging_configuration` (whether invocation logging is configured and which modalities are enabled)
-- The CloudWatch log group or S3 bucket that Bedrock writes to (retention, lifecycle, encryption, versioning)
+- The CloudWatch log group or S3 bucket that Bedrock writes to (retention, lifecycle, encryption, versioning); CloudWatch subscription filters as a forwarder signal
 - `aws_cloudtrail` (an enabled trail covering control-plane events)
-- Local vs remote Terraform modules (so cross-stack logging topologies are flagged rather than silently passed)
+- Local vs remote Terraform modules (so cross-stack logging / risk-management topologies are flagged rather than silently passed)
 
 The scanner is **deliberately conservative**: when it cannot prove a control is in place, it emits `INCONCLUSIVE` rather than `PASS` or `FAIL`. For a compliance tool, "we couldn't verify" is the only honest answer when the evidence is split across stacks, modules, or runtime values.
 
@@ -46,85 +48,38 @@ npm install -g infrarails
 infrarails ./infra/
 
 # 4. Or generate an HTML report
-infrarails ./infra/ --format html > report.html
+infrarails ./infra/ --format html -o report.html
 ```
 
 ---
 
 ## Rules
 
-`infrarails` ships **7 rules** mapped to Article 12 of the EU AI Act, with cross-references to NIST AI RMF and ISO/IEC 42001. Each finding is one of: **PASS**, **FAIL**, **WARN**, **SKIP**, or **INCONCLUSIVE**.
+`infrarails` ships **9 rules** mapped to Articles 9 and 12 of the EU AI Act, with cross-references to NIST AI RMF and ISO/IEC 42001. Each finding is one of: **PASS**, **FAIL**, **WARN**, **SKIP**, or **INCONCLUSIVE**.
 
-| Rule ID | Severity | Phase | Check |
-|---|---|---|---|
-| `S-12.1.1` | FAIL | 1 | AWS Bedrock model invocation logging is configured when Bedrock is in use |
-| `S-12.1.2a` | FAIL | 2 | CloudWatch log group used for Bedrock logs has a retention policy >= 365 days |
-| `S-12.1.2b` | FAIL | 2 | S3 bucket used for Bedrock logs has a lifecycle policy >= 365 days |
-| `S-12.x.1` | WARN | 2 | S3 log bucket has versioning (or object lock) enabled |
-| `S-12.x.2a` | WARN | 2 | S3 log bucket has KMS server-side encryption configured |
-| `S-12.x.4` | FAIL | 2 | A CloudTrail trail is present and enabled |
-| `S-12.x.5` | WARN | 2 | Flags remote modules whose contents the scanner cannot inspect |
+| Rule ID | Severity | Phase | Article | Check |
+|---|---|---|---|---|
+| `S-9.x.1` | FAIL | 2 | 9 | Bedrock Agents must have a versioned guardrail attached (Agent-attached guardrails only - raw InvokeModel/Converse SDK calls are out of scope for static IaC scanning) |
+| `S-9.x.2` | WARN | 2 | 9 | When Bedrock is in use, at least one `aws_bedrock_guardrail` should be declared in scanned Terraform (presence-level signal; complements `S-9.x.1`) |
+| `S-12.1.1` | FAIL | 1 | 12 | AWS Bedrock model invocation logging is configured when Bedrock is in use |
+| `S-12.1.2a` | WARN | 2 | 12 | CloudWatch log group used for Bedrock logs has a retention policy >= 180 days, or a forwarder pipe to an external log system was detected |
+| `S-12.1.2b` | FAIL | 2 | 12 | S3 bucket used for Bedrock logs has a lifecycle policy >= 365 days |
+| `S-12.x.1` | WARN | 2 | 12 | S3 log bucket has versioning (or object lock) enabled |
+| `S-12.x.2a` | WARN | 2 | 12 | S3 log bucket has KMS server-side encryption configured |
+| `S-12.x.4` | FAIL | 2 | 12 | A CloudTrail trail is present and enabled |
+| `S-12.x.5` | WARN | 2 | 12 | Flags remote modules whose contents the scanner cannot inspect |
 
-Retention thresholds: **WARN** at >= 180 days, **PASS** at >= 365 days.
+Retention thresholds for `S-12.1.2a`: **PASS** at >= 365 days (or `retention_in_days = 0` for never-expire), **WARN** for everything else. The rule is intentionally WARN-only - in real enterprise estates, retention is often satisfied by a forwarder shipping logs to Datadog/Splunk/SIEM owned by a separate platform repo, by a central log-archive account (Control Tower / Landing Zone), or by an auto-subscription Lambda deployed out-of-band. A static single-repo scan cannot prove that retention is *missing*, so the rule warns rather than fails. When a `aws_cloudwatch_log_subscription_filter` targeting the log group is present in the scanned files, the WARN message says so explicitly; otherwise the message reminds the reader that forwarders are commonly out-of-repo and need to be verified at the destination.
+
+Retention threshold for `S-12.1.2b`: **FAIL** below 365 days.
 
 ---
 
 ## Architecture
 
-`infrarails` is a small, layered TypeScript pipeline. Each layer has a narrow contract, which makes the rule logic easy to read and the failure modes easy to reason about.
+`infrarails` is a small, layered TypeScript pipeline: a parser that turns `.tf` / `.tf.json` files into a uniform JSON representation (via [`hcl2json`](https://github.com/tmccombs/hcl2json)), a value **resolver** that classifies every expression as `literal`, `address`, or `unresolvable` (with a reason code), and a **two-phase rule engine** - Phase 1 builds a `ScanContext` of the buckets and log groups Bedrock is actually writing to, and Phase 2 rules consume that context to scope their checks. Local modules are walked transparently; remote modules are flagged but never fetched.
 
-```
-   +------------------+
-   |  CLI (commander) |   src/index.ts - argv parsing, exit codes
-   +--------+---------+
-            |
-   +--------v---------+
-   |     Parser       |   src/parser.ts
-   |  .tf  -> hcl2json|   recursively walks the directory, skips
-   |  .tf.json -> JSON|   node_modules / vendor / examples / .* etc.
-   +--------+---------+
-            | ParsedFile[] (filePath, json, rawHcl)
-   +--------v---------+
-   |     Resolver     |   src/resolver.ts
-   |  var / local /   |   classifies values as literal | address |
-   |  data / module   |   unresolvable (with a reason code)
-   +--------+---------+
-            |
-   +--------v---------+
-   | Two-phase Runner |   src/runner.ts
-   |                  |
-   |  Phase 1 rules --+--> populate ScanContext via src/context.ts
-   |  Phase 2 rules --+--> consume ScanContext (bucket / log-group names,
-   |                  |    unresolved refs, strictAccountLogging flag)
-   +--------+---------+
-            | Finding[]
-   +--------v---------+
-   |    Formatter     |   src/formatter.ts - terminal, JSON, or HTML
-   +------------------+
-```
-
-**Why two phases?** Most rules need to know *which buckets and log groups Bedrock is actually writing to* before they can check encryption, versioning, retention, etc. Phase 1 (currently just `S-12.1.1`) walks `aws_bedrock_model_invocation_logging_configuration` blocks and resolves their `bucket_name` / `log_group_name` fields into a `ScanContext`. Phase 2 rules use that context to scope their checks - e.g. `S-12.x.2a` only flags encryption gaps on buckets that are *actually* receiving Bedrock logs, not every bucket in the repo.
-
-**The resolver** is what makes the scanner robust on real-world Terraform. A `bucket_name` field can be a literal, a `var.X`, a `local.Y`, a reference to another `aws_s3_bucket`, an SSM parameter, a module output, or a complex interpolation. The resolver classifies each into one of three outcomes:
-
-| Outcome | Example | What rules do with it |
-|---|---|---|
-| **literal** | `"prod-ai-audit-logs"` | Use the value directly |
-| **address** | `aws_s3_bucket.logs.id` resolved to its `bucket` attribute | Use the resolved name |
-| **unresolvable** | `var.bucket_name` (no default), `data.aws_ssm_parameter.X.value`, `module.logging.bucket` | Emit `INCONCLUSIVE` instead of guessing |
-
-The unresolvable cases get categorised (`var-no-default`, `data-source-ssm`, `module-output`, ...) so the finding message can tell the operator *why* the value couldn't be checked statically.
-
-### Scanner directory traversal
-
-The parser recursively walks the target directory and parses every `.tf` and `.tf.json` file it finds. **Local modules are scanned as part of the same pass** (e.g. `./modules/bedrock_logging/main.tf` is read alongside the root). The following directories are skipped automatically:
-
-```
-node_modules, venv, env, __pycache__,
-examples, test, tests, vendor, .* (any dotfile/dir)
-```
-
-Remote modules (registry, git, http) are not fetched - their contents are invisible to a static scan, so `S-12.x.5` flags them and `S-12.1.1` factors them into its INCONCLUSIVE reasoning.
+For the full pipeline diagram, the resolver outcome table, the `ScanContext` shape, and guidance for adding new rules, see **[ARCHITECTURE.md](ARCHITECTURE.md)**.
 
 ---
 
@@ -172,6 +127,20 @@ By default, the scanner assumes account-baseline patterns are common (logging co
 
 When the scanner sees Bedrock usage *and* hints that logging is wired up via another stack - a `data.terraform_remote_state.account_baseline.outputs.log_bucket` reference, a baseline-logging module call, or an input key like `log_bucket` / `bedrock_logs_bucket` on a module - it emits `INCONCLUSIVE` with the specific cross-stack pointer that triggered the decision. **This overrides `--strict-account-logging`**: when there is positive evidence of external logging, the scanner won't FAIL.
 
+### Short retention with a CloudWatch subscription filter -> WARN (forwarder-aware)
+
+A common enterprise pattern: the app team's Terraform declares a Bedrock log group with `retention_in_days = 7` because the actual retention lives at a Datadog/Splunk/SIEM destination subscribed via `aws_cloudwatch_log_subscription_filter`. `S-12.1.2a` detects the subscription filter (matching by literal name, resource address, or resolved variable/local) and emits a WARN whose remediation explicitly notes the filter and reminds the reader to verify destination retention. When no filter is found in scanned files, the WARN remediation instead reminds the reader that forwarders are commonly owned by a separate platform repo or central log-archive account - the scanner cannot tell the difference between "no forwarder anywhere" and "forwarder in another repo." Either way, the rule is WARN-only and never FAILs on retention alone.
+
+### Bedrock Guardrails - Agent-attached vs SDK runtime
+
+Bedrock Guardrails attach to two surfaces: **(a)** Bedrock Agents via the `guardrail_configuration` block on `aws_bedrockagent_agent` - declared in HCL, statically verifiable; **(b)** raw `InvokeModel` / `Converse` SDK calls via the `guardrailIdentifier` parameter - passed in application code (Python/TypeScript/Java), invisible to a static IaC scanner.
+
+`S-9.x.1` covers (a): for every `aws_bedrockagent_agent` it checks that a `guardrail_configuration` block is present, that `guardrail_identifier` is non-empty, and that `guardrail_version` is a numbered version rather than `"DRAFT"` (DRAFT versions are mutable and not auditable as a fixed control).
+
+`S-9.x.2` covers a weaker but useful presence-level question: **"Bedrock is being used somewhere - is at least one `aws_bedrock_guardrail` declared anywhere in the scanned Terraform?"** It WARNs (never FAILs) when no guardrail is found, because guardrails are commonly defined in a separate security/platform stack and a single-repo scan can't see those. The remediation message names all three real possibilities: declare here, scan the security stack, or pass `guardrailIdentifier` in SDK code.
+
+Neither rule attempts to verify (b) - that's an application-layer control surface (code review, SDK linting, runtime tracing) and is explicitly called out in both rules' descriptions and remediation messages so users don't read a passing `S-9.x.1` as covering their SDK-driven workloads.
+
 ### Indirect-only Bedrock signals -> always INCONCLUSIVE
 
 IAM grants for `bedrock:*` actions, VPC endpoints to `bedrock-runtime`, or `aws_bedrock_foundation_model` data sources are *signals* that something nearby uses Bedrock - but the deploying resource may live in another stack entirely. These are never confident `FAIL`s, even under `--strict-account-logging`.
@@ -218,6 +187,7 @@ infrarails <directory> [options]
 | Flag | Default | Description |
 |---|---|---|
 | `-f, --format <format>` | `terminal` | Output format: `terminal`, `json`, or `html` |
+| `-o, --output <file>` | stdout | Write the rendered report to a file instead of stdout. Avoids the need to shell-redirect for `html`/`json` and prevents the common footgun of dumping markup into the terminal. When `-f html` or `-f json` is used without `-o` *and* stdout is a TTY, the CLI prints a one-line tip to stderr suggesting `-o`. The tip is silent when piped or redirected, so existing scripts and CI invocations are unaffected. |
 | `--no-strict` | strict on | Treat `INCONCLUSIVE` findings as non-blocking. By default INCONCLUSIVE blocks the exit code like FAIL - for a compliance tool, "we couldn't verify" should not pass a CI gate silently. |
 | `--strict-account-logging` | off | When set, missing `aws_bedrock_model_invocation_logging_configuration` is treated as `FAIL` instead of `INCONCLUSIVE`. Use this only when the scanned tree is the entire infra estate (no separate account-baseline stack). External-logging hints still downgrade to INCONCLUSIVE. |
 | `--version` | - | Print version |
@@ -230,10 +200,13 @@ infrarails <directory> [options]
 infrarails ./infra/
 
 # Generate an HTML report (with collapsible sections, framework pills, disclaimer)
+infrarails ./infra/ --format html -o report.html
+
+# Or with shell redirection (still works)
 infrarails ./infra/ --format html > report.html
 
 # Output machine-readable JSON for CI/CD
-infrarails ./infra/ --format json | tee compliance-report.json
+infrarails ./infra/ --format json -o compliance-report.json
 
 # Non-strict mode (INCONCLUSIVE will not block CI)
 infrarails ./infra/ --no-strict
@@ -298,13 +271,13 @@ Colour-coded, grouped by status, with framework cross-references on each finding
 infrarails - Compliance Report
 EU AI Act Article 12  ·  NIST AI RMF  ·  ISO/IEC 42001
 
-1 passed   1 failed   0 warnings   1 inconclusive   3 skipped
+1 passed   0 failed   1 warnings   1 inconclusive   3 skipped
 
-- FAIL (1) -
+- WARN (1) -
 
-✗ S-12.1.2a  CloudWatch log group "/aws/bedrock/model-invocation-logs" has no retention_in_days declared.
+⚠ S-12.1.2a  CloudWatch log group "/aws/bedrock/model-invocation-logs" has no retention_in_days declared.
    ./infra/bedrock/main.tf:23
-   → Set retention_in_days explicitly: a value >= 180 (recommended: 365)...
+   → Set retention_in_days explicitly: a value >= 180 (recommended: 365). No CloudWatch subscription filter was found in the scanned Terraform, but forwarders are commonly owned by a separate platform repo (Datadog/Splunk forwarder Lambda, central log-archive account, auto-subscription Lambda)...
    EU Article 12(1)  ·  NIST MANAGE 4.1, MANAGE 4.3, MEASURE 3.2  ·  ISO A.6.2.8, A.6.2.6
 
 - INCONCLUSIVE (1) -
@@ -327,7 +300,7 @@ Self-contained, single-file HTML report with:
 - Full disclaimer block at the bottom
 
 ```bash
-infrarails ./infra/ --format html > report.html
+infrarails ./infra/ --format html -o report.html
 open report.html
 ```
 
@@ -338,17 +311,17 @@ open report.html
   "summary": {
     "total": 6,
     "pass": 1,
-    "fail": 1,
-    "warn": 0,
+    "fail": 0,
+    "warn": 1,
     "skip": 3,
     "inconclusive": 1
   },
   "findings": [
     {
       "ruleId": "S-12.1.2a",
-      "status": "FAIL",
+      "status": "WARN",
       "description": "CloudWatch log group ... has no retention_in_days declared.",
-      "remediation": "Set retention_in_days explicitly...",
+      "remediation": "Set retention_in_days explicitly... No CloudWatch subscription filter was found in the scanned Terraform...",
       "regulatoryReference": "EU AI Act Article 12(1) - Logs retained for appropriate period",
       "nistReference": "NIST AI RMF: MANAGE 4.1 (post-deployment monitoring); MANAGE 4.3 (incident communication); MEASURE 3.2 (risk tracking)",
       "isoReference": "ISO/IEC 42001:2023 Annex A: A.6.2.8 (AI system event logs); A.6.2.6 (operation and monitoring)"
@@ -367,11 +340,11 @@ open report.html
 - name: Compliance scan
   run: |
     npm install -g infrarails
-    infrarails ./infra/ --format json | tee compliance-report.json
+    infrarails ./infra/ --format json -o compliance-report.json
   continue-on-error: false
 
 - name: Upload HTML report
-  run: infrarails ./infra/ --format html > report.html
+  run: infrarails ./infra/ --format html -o report.html
 
 - name: Upload artifacts
   uses: actions/upload-artifact@v4
@@ -389,8 +362,8 @@ compliance:
   stage: validate
   script:
     - npm install -g infrarails
-    - infrarails ./infra/ --format json | tee compliance-report.json
-    - infrarails ./infra/ --format html > report.html
+    - infrarails ./infra/ --format json -o compliance-report.json
+    - infrarails ./infra/ --format html -o report.html
   artifacts:
     paths:
       - compliance-report.json
@@ -446,11 +419,7 @@ Contributions are welcome. Please open an issue before submitting a pull request
 
 ### Adding a new rule
 
-Each rule lives in `src/rules/` and implements the `ScanRule` interface from `src/types.ts`. The rule ID should follow the `S-12.x.y` naming convention and include `regulatoryReference`, `nistReference`, and `isoReference` strings mapping to the specific controls. Register the new rule in [src/rules/index.ts](src/rules/index.ts).
-
-Set `phase1: true` only if the rule needs to populate `ScanContext` for other rules to consume (currently just `S-12.1.1`). Most new rules should be phase 2 - they read context built in phase 1 and inspect specific resource types.
-
-Test fixtures for end-to-end scenarios live under [test/fixtures/bedrock-logging-combos/](test/fixtures/bedrock-logging-combos/) - each subdirectory is a self-contained Terraform configuration that exercises one scenario (e.g. `cross-stack-baseline-logging`, `remote-module-bedrock-logging`, `strict-mode-fail`).
+See the **[Adding a new rule](ARCHITECTURE.md#adding-a-new-rule)** section in [ARCHITECTURE.md](ARCHITECTURE.md), which covers the `ScanRule` interface, the two-phase model, naming conventions, and the test-fixture layout.
 
 ---
 

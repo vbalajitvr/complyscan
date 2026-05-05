@@ -20,16 +20,17 @@ describe('S-12.1.2a CloudWatch Retention', () => {
     expect(findings[0].status).toBe('SKIP');
   });
 
-  it('should FAIL when log group not found in Terraform', () => {
+  it('should WARN when log group not found in Terraform', () => {
     const ctx = bedrockContext();
     const files = [makeParsedFile({})];
     const findings = cwRetentionRule.run(files, ctx);
 
     expect(findings).toHaveLength(1);
-    expect(findings[0].status).toBe('FAIL');
+    expect(findings[0].status).toBe('WARN');
+    expect(findings[0].remediation).toContain('No CloudWatch subscription filter was found');
   });
 
-  it('should FAIL when retention < 180 days', () => {
+  it('should WARN when retention < 180 days', () => {
     const ctx = bedrockContext();
     const files = [
       makeParsedFile({
@@ -41,7 +42,33 @@ describe('S-12.1.2a CloudWatch Retention', () => {
     const findings = cwRetentionRule.run(files, ctx);
 
     expect(findings).toHaveLength(1);
-    expect(findings[0].status).toBe('FAIL');
+    expect(findings[0].status).toBe('WARN');
+    expect(findings[0].remediation).toContain('No CloudWatch subscription filter was found');
+  });
+
+  it('should WARN with forwarder-found note when subscription filter is present', () => {
+    const ctx = bedrockContext();
+    const files = [
+      makeParsedFile({
+        aws_cloudwatch_log_group: {
+          bedrock_logs: [{ name: '/aws/bedrock/invocation-logs', retention_in_days: 7 }],
+        },
+        aws_cloudwatch_log_subscription_filter: {
+          datadog: [
+            {
+              log_group_name: '/aws/bedrock/invocation-logs',
+              destination_arn: 'arn:aws:lambda:us-east-1:123456789012:function:datadog-forwarder',
+              filter_pattern: '',
+            },
+          ],
+        },
+      }),
+    ];
+    const findings = cwRetentionRule.run(files, ctx);
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0].status).toBe('WARN');
+    expect(findings[0].remediation).toContain('A CloudWatch subscription filter was found');
   });
 
   it('should WARN when retention >= 180 but < 365 days', () => {
@@ -89,7 +116,7 @@ describe('S-12.1.2a CloudWatch Retention', () => {
     expect(findings[0].status).toBe('PASS');
   });
 
-  it('should FAIL when retention_in_days is not set', () => {
+  it('should WARN when retention_in_days is not set', () => {
     const ctx = bedrockContext();
     const files = [
       makeParsedFile({
@@ -101,6 +128,6 @@ describe('S-12.1.2a CloudWatch Retention', () => {
     const findings = cwRetentionRule.run(files, ctx);
 
     expect(findings).toHaveLength(1);
-    expect(findings[0].status).toBe('FAIL');
+    expect(findings[0].status).toBe('WARN');
   });
 });

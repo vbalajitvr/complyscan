@@ -20,10 +20,52 @@ const RETENTION_RATIONALE =
   'Sub-180-day retention undermines post-market monitoring (Article 72) and ' +
   'incident investigation; 365 days is the typical floor for production AI.';
 
+// A static IaC scan cannot prove what happens to logs after they leave the
+// account: forwarders to Datadog/Splunk/SIEM are usually owned by a platform
+// team in a separate Terraform repo (or deployed out-of-band via the Datadog
+// CloudFormation template, StackSets, or auto-subscription Lambdas). A short
+// or undeclared retention_in_days is therefore not proof of a compliance gap -
+// it may be deliberate when a forwarder is shipping logs to a system that
+// retains them. We WARN in every uncertain case rather than FAIL, and tailor
+// the message based on whether a subscription filter was found in the scanned
+// Terraform.
+const FORWARDER_NOTE_WHEN_FOUND =
+  'A CloudWatch subscription filter was found in the scanned Terraform - ' +
+  'logs may be forwarded to an external system (Datadog, Splunk, SIEM) where ' +
+  'retention is satisfied. Verify the destination retention; this scanner ' +
+  'cannot follow the chain past the subscription filter.';
+
+const FORWARDER_NOTE_WHEN_MISSING =
+  'No CloudWatch subscription filter was found in the scanned Terraform, but ' +
+  'forwarders are commonly owned by a separate platform repo (Datadog/Splunk ' +
+  'forwarder Lambda, central log-archive account, auto-subscription Lambda). ' +
+  'If logs are forwarded out-of-repo, verify retention at the destination. ' +
+  'If they are not, this is a real compliance gap.';
+
+function hasSubscriptionFilterFor(
+  files: ParsedFile[],
+  targetLogGroupName: string,
+): boolean {
+  const filters = findResources(files, 'aws_cloudwatch_log_subscription_filter');
+  for (const f of filters) {
+    const lgName = getNestedValue(f.body, 'log_group_name');
+
+    if (lgName === targetLogGroupName) return true;
+
+    if (typeof lgName === 'string') {
+      const result = resolveExpression(lgName, files);
+      if (result?.kind === 'literal' && result.value === targetLogGroupName) return true;
+      if (result?.kind === 'address' && result.value === targetLogGroupName) return true;
+      if (result?.kind === 'address' && result.value === `aws_cloudwatch_log_group.${targetLogGroupName}`) return true;
+    }
+  }
+  return false;
+}
+
 export const cwRetentionRule: ScanRule = {
   id: 'S-12.1.2a',
-  description: 'CloudWatch log group retention must be at least 180 days',
-  severity: 'FAIL',
+  description: 'CloudWatch log group retention - WARN-level (forwarders may satisfy retention out-of-repo)',
+  severity: 'WARN',
   regulatoryReference: 'EU AI Act Article 12(1) - Logs retained for appropriate period',
   nistReference: 'NIST AI RMF 1.0: MANAGE 4.1 (post-deployment monitoring plans); MANAGE 4.3 (incident communication to AI actors); MEASURE 3.2 (risk tracking across AI lifecycle)',
   isoReference: 'ISO/IEC 42001:2023 Annex A: A.6.2.8 (AI system event logs); A.6.2.6 (AI system operation and monitoring)',
@@ -87,16 +129,18 @@ export const cwRetentionRule: ScanRule = {
       });
 
       if (!matching) {
+        const forwarderFound = hasSubscriptionFilterFor(files, targetName);
         findings.push({
           ruleId: this.id,
-          status: 'FAIL',
+          status: 'WARN',
           filePath: '',
-          description: `CloudWatch log group "${targetName}" is referenced by Bedrock invocation logging but not declared in any scanned Terraform file - its retention is not under IaC control.`,
+          description: `CloudWatch log group "${targetName}" is referenced by Bedrock invocation logging but not declared in any scanned Terraform file - its retention is not under this repo's IaC control.`,
           remediation:
-            `Add an aws_cloudwatch_log_group resource for "${targetName}" with ` +
-            `retention_in_days >= ${MIN_RETENTION_DAYS} (recommended: ${RECOMMENDED_RETENTION_DAYS}). ` +
-            `Why: ${RETENTION_RATIONALE} Without an explicit declaration, retention drifts ` +
-            `outside Terraform and becomes invisible to compliance scans.`,
+            `Either declare an aws_cloudwatch_log_group resource for "${targetName}" with ` +
+            `retention_in_days >= ${MIN_RETENTION_DAYS} (recommended: ${RECOMMENDED_RETENTION_DAYS}), ` +
+            `or confirm the log group is managed in another Terraform repo / central account. ` +
+            `${forwarderFound ? FORWARDER_NOTE_WHEN_FOUND : FORWARDER_NOTE_WHEN_MISSING} ` +
+            `Why retention matters: ${RETENTION_RATIONALE}`,
           regulatoryReference: this.regulatoryReference,
           nistReference: this.nistReference,
           isoReference: this.isoReference,
@@ -123,33 +167,37 @@ export const cwRetentionRule: ScanRule = {
           isoReference: this.isoReference,
           });
         } else {
+          const forwarderFound = hasSubscriptionFilterFor(files, targetName);
           findings.push({
             ruleId: this.id,
-            status: 'FAIL',
+            status: 'WARN',
             filePath: matching.filePath,
             line,
-            description: `CloudWatch log group "${targetName}" has no retention_in_days declared. Behaviour falls back to whatever was previously set in AWS - retention is not under IaC control.`,
+            description: `CloudWatch log group "${targetName}" has no retention_in_days declared. Behaviour falls back to whatever was previously set in AWS - local retention is not under IaC control.`,
             remediation:
               `Set retention_in_days explicitly: a value >= ${MIN_RETENTION_DAYS} ` +
               `(recommended: ${RECOMMENDED_RETENTION_DAYS}), or 0 for never-expire. ` +
-              `Why: ${RETENTION_RATIONALE} An undeclared value is the worst of both ` +
-              `worlds - actual retention depends on prior AWS-side state and is not ` +
-              `auditable from Terraform alone.`,
+              `${forwarderFound ? FORWARDER_NOTE_WHEN_FOUND : FORWARDER_NOTE_WHEN_MISSING} ` +
+              `Why retention matters: ${RETENTION_RATIONALE}`,
             regulatoryReference: this.regulatoryReference,
           nistReference: this.nistReference,
           isoReference: this.isoReference,
           });
         }
       } else if (retentionDays < MIN_RETENTION_DAYS) {
+        const forwarderFound = hasSubscriptionFilterFor(files, targetName);
         findings.push({
           ruleId: this.id,
-          status: 'FAIL',
+          status: 'WARN',
           filePath: matching.filePath,
           line,
           description: `CloudWatch log group "${targetName}" retention is ${retentionDays} days, below the ${MIN_RETENTION_DAYS}-day floor infrarails applies for high-risk AI logging.`,
           remediation:
             `Increase retention_in_days to >= ${MIN_RETENTION_DAYS} ` +
-            `(recommended: ${RECOMMENDED_RETENTION_DAYS}). Why: ${RETENTION_RATIONALE}`,
+            `(recommended: ${RECOMMENDED_RETENTION_DAYS}), or confirm retention is ` +
+            `satisfied by a forwarder destination / central log-archive account. ` +
+            `${forwarderFound ? FORWARDER_NOTE_WHEN_FOUND : FORWARDER_NOTE_WHEN_MISSING} ` +
+            `Why retention matters: ${RETENTION_RATIONALE}`,
           regulatoryReference: this.regulatoryReference,
           nistReference: this.nistReference,
           isoReference: this.isoReference,
