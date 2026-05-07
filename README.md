@@ -10,7 +10,9 @@
 
 ## What is this?
 
-`infrarails` is built for teams running **high-risk AI systems on AWS Bedrock**. It reads your **Terraform HCL source files** (and `.tf.json` files emitted by cdktf, Terragrunt, and other generators) and reports exactly which infrastructure-layer controls are passing, failing, or cannot be verified statically - giving you a clear, actionable readiness report without needing to deploy anything.
+`infrarails` is built for teams running **high-risk AI systems on AWS Bedrock**, and for teams voluntarily adopting Article 9 / Article 12-equivalent controls under **NIST AI RMF** or **ISO/IEC 42001** even when the EU AI Act does not legally require them (procurement commitments, customer requirements, internal policy, or simply applying the same audit-grade controls to lower-risk workloads). It reads your **Terraform HCL source files** (and `.tf.json` files emitted by cdktf, Terragrunt, and other generators) and reports exactly which infrastructure-layer controls are passing, failing, or cannot be verified statically - giving you a clear, actionable readiness report without needing to deploy anything.
+
+> **A note on EU AI Act risk tiers:** Articles 9 and 12 are mandatory only for **high-risk** systems under the Act. The Act has no "medium-risk" category - the tier between high-risk and minimal-risk is "limited risk", which carries only transparency obligations (Article 50). If you're applying these controls to a limited-risk system, you're going beyond what the Act requires - which is exactly what NIST AI RMF and ISO/IEC 42001 encourage as good practice.
 
 Each finding is cross-referenced against three frameworks:
 
@@ -235,15 +237,19 @@ infrarails ./infra/ --strict-account-logging
 
 | Dep | Why | Min version |
 |---|---|---|
-| **Node.js + npm** | Runtime for the CLI | Node 18+ |
+| **Node.js + npm** | Runtime for the CLI | Node 18+ (runtime) / Node 20.x, 22.x, or 24+ (development & tests) |
 | **[`hcl2json`](https://github.com/tmccombs/hcl2json)** | Converts Terraform HCL → JSON internally | any recent release |
 
 The CLI invokes `hcl2json` via `child_process.spawnSync` over stdin (no shell), so it works the same on macOS, Linux, and native Windows.
 
+> **Why two Node versions?** The published CLI is built with `target: 'node18'` (see [tsup.config.ts](tsup.config.ts)), so end users only need Node 18+. Contributors running the test suite need Node **20.x, 22.x, or 24+** because vitest 4.x requires `^20.0.0 || ^22.0.0 || >=24.0.0`. Node 18 fails the test suite at startup with a `node:util` `styleText` import error; Node 21 and 23 (odd-numbered, non-LTS) are also excluded by vitest.
+
 ### macOS
 
 ```bash
-# Node 18+ (skip if you already have it via nvm/fnm/volta)
+# Node 20+ recommended (Node 18+ works for the published CLI, but contributors
+# running the test suite need Node 20.x / 22.x / 24+ - see note above).
+# Skip this step if you already have a suitable version via nvm/fnm/volta.
 brew install node
 
 # hcl2json
@@ -256,7 +262,8 @@ node --version && npm --version && hcl2json --version
 ### Linux (Ubuntu / Debian)
 
 ```bash
-# Node 18+ via NodeSource (skip if you already have it)
+# Node 20+ via NodeSource (skip if you already have it).
+# Node 18 works for running the published CLI but not for the test suite.
 curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
 sudo apt-get install -y nodejs
 
@@ -274,7 +281,8 @@ For other distros (Fedora/Arch/etc.), install Node from your package manager and
 ### Windows (PowerShell)
 
 ```powershell
-# Node 18+ - via winget, scoop, choco, or installer from https://nodejs.org
+# Node 20+ recommended - via winget, scoop, choco, or installer from https://nodejs.org.
+# OpenJS.NodeJS.LTS currently resolves to a 20.x release.
 winget install OpenJS.NodeJS.LTS
 
 # hcl2json - download the Windows binary and put it on PATH
@@ -318,7 +326,7 @@ npm uninstall -g infrarails
 
 ### From GitHub (clone + build)
 
-Use this if you want to track `main`, run from a feature branch, or modify the rules locally. Requires the prerequisites above (Node 18+, `hcl2json`).
+Use this if you want to track `main`, run from a feature branch, or modify the rules locally. Requires the prerequisites above (Node 20.x / 22.x / 24+ if you want to run tests; Node 18+ is enough if you only want to build and use the CLI), plus `hcl2json`.
 
 ```bash
 # 1. Clone
@@ -333,7 +341,7 @@ npm run build
 npm link
 ```
 
-`npm link` creates a symlink in your global `node_modules` pointing at this checkout, so `git pull && npm run build` is enough to pick up upstream changes — no re-link needed. To unlink:
+`npm link` creates a symlink in your global `node_modules` pointing at this checkout, so `git pull && npm run build` is enough to pick up upstream changes - no re-link needed. To unlink:
 
 ```bash
 npm unlink -g infrarails
@@ -350,7 +358,7 @@ npm unlink -g infrarails
 Colour-coded, grouped by status, with framework cross-references on each finding:
 
 ```
-infrarails - Compliance Report
+InfraRails — Compliance Report
 EU AI Act Article 12  ·  NIST AI RMF  ·  ISO/IEC 42001
 
 1 passed   0 failed   1 warnings   1 inconclusive   3 skipped
@@ -388,7 +396,7 @@ open report.html
 
 ### PDF
 
-Single-file, paginated PDF rendered server-side via [`pdfkit`](https://pdfkit.org/) — no headless Chromium, no system dependencies. Layout mirrors the HTML report (summary bar, status sections, framework pills, full disclaimer). Recommended for sharing with auditors and over channels where HTML is awkward.
+Single-file, paginated PDF rendered server-side via [`pdfkit`](https://pdfkit.org/) - no headless Chromium, no system dependencies. Layout mirrors the HTML report (summary bar, status sections, framework pills, full disclaimer). Recommended for sharing with auditors and over channels where HTML is awkward.
 
 PDF is binary, so `-o` is required; running `--format pdf` without `-o` exits with code `2` rather than dumping bytes into the terminal.
 
@@ -397,6 +405,14 @@ On Windows, PDF is the preferred share format because Windows SmartScreen flags 
 ```bash
 infrarails ./infra/ --format pdf -o report.pdf
 ```
+
+#### Sample reports
+
+Page 1 of two real scans, generated with the command above:
+
+| `sample-chat-bedrock` (small, focused stack) | `infrastructure` (large multi-stack estate) |
+| --- | --- |
+| [![Bedrock chat sample report](docs/samples/sample-report-bedrock.png)](docs/samples/sample-report-bedrock.png) | [![Multi-stack infrastructure sample report](docs/samples/sample-report-infrastructure.png)](docs/samples/sample-report-infrastructure.png) |
 
 ### JSON
 

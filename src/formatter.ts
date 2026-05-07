@@ -111,7 +111,7 @@ export function formatTerminal(findings: Finding[]): string {
   const groups = groupByStatus(findings);
 
   lines.push('');
-  lines.push(chalk.bold('infrarails - Compliance Report'));
+  lines.push(chalk.bold('InfraRails — Compliance Report'));
   lines.push(chalk.dim('EU AI Act Article 12  ·  NIST AI RMF  ·  ISO/IEC 42001'));
   lines.push('');
 
@@ -282,7 +282,7 @@ ${cards}
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>infrarails - Compliance Report</title>
+<title>InfraRails — Compliance Report</title>
 <style>
   :root {
     --pass: #16a34a; --fail: #dc2626; --warn: #d97706;
@@ -417,7 +417,7 @@ ${cards}
 <body>
 <div class="container">
   <header class="top">
-    <h1>infrarails - Compliance Report</h1>
+    <h1>InfraRails — Compliance Report</h1>
     <p class="subtitle">EU AI Act Article 12 &middot; NIST AI RMF &middot; ISO/IEC 42001</p>
     <p class="meta">${escapeHtml(generatedAt)} &middot; ${summary.total} findings</p>
   </header>
@@ -510,7 +510,7 @@ function drawPill(
 
 function drawHeader(doc: PDFDoc, total: number, generatedAt: string) {
   doc.font('Helvetica-Bold').fontSize(20).fillColor(PDF_TEXT)
-    .text('infrarails - Compliance Report');
+    .text('InfraRails — Compliance Report');
   doc.moveDown(0.2);
   doc.font('Helvetica').fontSize(10).fillColor(PDF_MUTED)
     .text('EU AI Act Article 12  ·  NIST AI RMF  ·  ISO/IEC 42001');
@@ -717,7 +717,7 @@ export async function formatPdf(findings: Finding[]): Promise<Buffer> {
     size: 'A4',
     margin: 50,
     info: {
-      Title: 'infrarails - Compliance Report',
+      Title: 'InfraRails — Compliance Report',
       Producer: 'infrarails',
     },
   });
