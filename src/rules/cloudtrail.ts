@@ -5,6 +5,7 @@ import {
   getNestedValue,
   findBaselineRemoteState,
 } from '../utils/resource-helpers';
+import { isUnresolvedScalar } from '../utils/literal';
 
 const REGULATORY_REFERENCE = 'EU AI Act Article 12 - Audit trail for AI system events';
 const NIST_REFERENCE = 'NIST AI RMF 1.0: MANAGE 4.1 (post-deployment monitoring plans); GOVERN 1.4 (transparent risk-management policies); MEASURE 2.7 (security and resilience)';
@@ -30,6 +31,7 @@ export const cloudtrailRule: ScanRule = {
     if (trails.length > 0) {
       return trails.map((trail) => {
         const enableLogging = getNestedValue(trail.body, 'enable_logging');
+        const line = findResourceLine(trail.rawHcl, 'aws_cloudtrail', trail.name);
 
         // enable_logging defaults to true in the AWS provider if not set.
         if (enableLogging === false) {
@@ -37,9 +39,27 @@ export const cloudtrailRule: ScanRule = {
             ruleId: this.id,
             status: 'FAIL' as const,
             filePath: trail.filePath,
-            line: findResourceLine(trail.rawHcl, 'aws_cloudtrail', trail.name),
+            line,
             description: `CloudTrail "${trail.name}" has enable_logging set to false - no control-plane events are being captured.`,
             remediation: 'Set enable_logging = true on the aws_cloudtrail resource.',
+            regulatoryReference: REGULATORY_REFERENCE,
+            nistReference: NIST_REFERENCE,
+            isoReference: ISO_REFERENCE,
+          };
+        }
+
+        // enable_logging driven by a var/local/data/module reference - we
+        // cannot prove the trail is actually capturing events.
+        if (isUnresolvedScalar(enableLogging)) {
+          return {
+            ruleId: this.id,
+            status: 'INCONCLUSIVE' as const,
+            filePath: trail.filePath,
+            line,
+            description: `CloudTrail "${trail.name}" has enable_logging set to a non-literal expression (${enableLogging}); the scanner cannot determine whether the trail will capture events.`,
+            remediation:
+              'Inline a literal enable_logging = true (or omit the attribute - it defaults to true), ' +
+              'or rerun the scan against terraform plan output where the reference is resolved.',
             regulatoryReference: REGULATORY_REFERENCE,
             nistReference: NIST_REFERENCE,
             isoReference: ISO_REFERENCE,
@@ -50,7 +70,7 @@ export const cloudtrailRule: ScanRule = {
           ruleId: this.id,
           status: 'PASS' as const,
           filePath: trail.filePath,
-          line: findResourceLine(trail.rawHcl, 'aws_cloudtrail', trail.name),
+          line,
           description: `CloudTrail "${trail.name}" is configured with logging enabled.`,
           remediation: '',
           regulatoryReference: REGULATORY_REFERENCE,

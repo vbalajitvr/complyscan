@@ -1,6 +1,7 @@
 import { ScanRule, Finding, ParsedFile, ScanContext } from '../types';
 import { findResources, findResourceLine, getNestedValue, inconclusiveFromUnresolved } from '../utils/resource-helpers';
-import { resolveExpression } from '../resolver';
+import { resolveExpression, resolveScalarReference } from '../resolver';
+import { isUnresolvedScalar } from '../utils/literal';
 
 const MIN_RETENTION_DAYS = 180;
 const RECOMMENDED_RETENTION_DAYS = 365;
@@ -149,8 +150,46 @@ export const cwRetentionRule: ScanRule = {
       }
 
       const retention = getNestedValue(matching.body, 'retention_in_days');
-      const retentionDays = typeof retention === 'number' ? retention : undefined;
+      let retentionDays = typeof retention === 'number' ? retention : undefined;
       const line = findResourceLine(matching.rawHcl, 'aws_cloudwatch_log_group', matching.name);
+
+      // retention_in_days driven by a var/local reference - try to resolve it
+      // against same-module variable defaults / locals before giving up. This
+      // turns "INCONCLUSIVE because expression" into a real verdict whenever
+      // the default is in the scanned repo.
+      if (retentionDays === undefined && isUnresolvedScalar(retention)) {
+        const resolved = resolveScalarReference(retention, files, matching.filePath);
+        if (resolved) {
+          if (typeof resolved.value === 'number') {
+            retentionDays = resolved.value;
+          } else if (typeof resolved.value === 'string') {
+            const parsed = Number(resolved.value);
+            if (Number.isFinite(parsed)) retentionDays = parsed;
+          }
+        }
+      }
+
+      // Still unresolved after walking variable/local defaults - the value
+      // is supplied at apply time (var with no default, module input, data
+      // source, complex interpolation). Surface INCONCLUSIVE rather than
+      // silently treating it as "not declared".
+      if (retentionDays === undefined && isUnresolvedScalar(retention)) {
+        findings.push({
+          ruleId: this.id,
+          status: 'INCONCLUSIVE',
+          filePath: matching.filePath,
+          line,
+          description: `CloudWatch log group "${targetName}" has retention_in_days set to a non-literal expression (${retention}); the scanner cannot determine whether retention meets the ${MIN_RETENTION_DAYS}-day floor.`,
+          remediation:
+            `Inline a literal retention_in_days >= ${MIN_RETENTION_DAYS} ` +
+            `(recommended: ${RECOMMENDED_RETENTION_DAYS}), or rerun the scan against ` +
+            `terraform plan output where the reference is resolved.`,
+          regulatoryReference: this.regulatoryReference,
+          nistReference: this.nistReference,
+          isoReference: this.isoReference,
+        });
+        continue;
+      }
 
       if (retentionDays === undefined || retentionDays === 0) {
         // retention_in_days = 0 means never expire - that's compliant.

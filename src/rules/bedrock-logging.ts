@@ -8,10 +8,8 @@ import {
   findBedrockDataSources,
   findIamBedrockGrants,
   findBedrockVpcEndpoints,
-  findBedrockRelatedModuleCalls,
-  findBaselineRemoteState,
-  findBedrockLoggingReferences,
 } from '../utils/resource-helpers';
+import { isUnresolvedScalar } from '../utils/literal';
 
 const MODALITY_TOGGLES = [
   'text_data_delivery_enabled',
@@ -39,12 +37,6 @@ interface IndirectUsage {
   dataSources: ReturnType<typeof findBedrockDataSources>;
 }
 
-interface ExternalLoggingHint {
-  modules: ReturnType<typeof findBedrockRelatedModuleCalls>;
-  baselineState: ReturnType<typeof findBaselineRemoteState>;
-  loggingRefs: ReturnType<typeof findBedrockLoggingReferences>;
-}
-
 export const bedrockLoggingRule: ScanRule = {
   id: 'S-12.1.1',
   description: 'Bedrock model invocation logging must be configured when Bedrock is in use',
@@ -60,7 +52,7 @@ export const bedrockLoggingRule: ScanRule = {
     const hasAgent = agentResources.length > 0;
     const agentNames = agentResources.map((a) => a.name);
 
-    // Case A - logging config present in scanned files. PASS / modality-FAIL.
+    // Logging config present in scanned files - PASS / modality-FAIL.
     if (configs.length > 0) {
       return configs.map((config) => evaluateLoggingConfig(config, hasAgent, agentNames));
     }
@@ -75,18 +67,13 @@ export const bedrockLoggingRule: ScanRule = {
       vpc: findBedrockVpcEndpoints(files),
       dataSources: findBedrockDataSources(files),
     };
-    const hint: ExternalLoggingHint = {
-      modules: findBedrockRelatedModuleCalls(files),
-      baselineState: findBaselineRemoteState(files),
-      loggingRefs: findBedrockLoggingReferences(files),
-    };
 
     const hasDirect = direct.length > 0;
-    const hasIndirect = indirect.iam.length > 0 || indirect.vpc.length > 0 || indirect.dataSources.length > 0;
-    const hasHint =
-      hint.modules.length > 0 || hint.baselineState.length > 0 || hint.loggingRefs.length > 0;
+    const hasIndirect =
+      indirect.iam.length > 0 || indirect.vpc.length > 0 || indirect.dataSources.length > 0;
 
-    // Case B - no Bedrock signals at all.
+    // No Bedrock signals at all. SKIP, unless there are unscannable remote
+    // modules - in which case INCONCLUSIVE because Bedrock may live inside.
     if (!hasDirect && !hasIndirect) {
       const remoteModules = findRemoteModules(files);
       if (remoteModules.length === 0) {
@@ -103,24 +90,21 @@ export const bedrockLoggingRule: ScanRule = {
           },
         ];
       }
-      return [buildRemoteModuleInconclusive(this.id, remoteModules, hint)];
+      return [buildRemoteModuleInconclusive(this.id, remoteModules)];
     }
 
-    // Case C - usage present (direct or indirect) and an external-logging hint
-    // says logging may be wired up elsewhere. Always INCONCLUSIVE, regardless
-    // of strict mode - we do not have enough evidence to FAIL.
-    if (hasHint) {
-      return [buildExternalHintInconclusive(this.id, direct, indirect, hint, hasAgent, agentNames)];
-    }
-
-    // Case D - only indirect signals (IAM / VPC / data source) and no logging.
-    // Indirect-only is never a confident FAIL - the deploying resource may be
-    // in another stack. Always INCONCLUSIVE.
+    // Indirect-only signals (IAM / VPC / data source) and no logging.
+    // The deploying resource may be in another stack, so this is never a
+    // confident FAIL even under strict mode.
     if (!hasDirect) {
       return [buildIndirectOnlyInconclusive(this.id, indirect)];
     }
 
-    // Case E - direct usage, no logging, no external hint.
+    // Direct Bedrock usage with no logging config in scanned files.
+    // Strict mode: the user is asserting this directory is the entire estate,
+    // so missing logging is a hard FAIL.
+    // Permissive mode: logging may legitimately live in another stack -
+    // emit INCONCLUSIVE and let the user decide.
     if (context.strictAccountLogging) {
       return [buildStrictModeFail(this.id, direct, indirect, hasAgent, agentNames)];
     }
@@ -147,10 +131,39 @@ function evaluateLoggingConfig(
 
   const explicitlyDisabled: string[] = [];
   const explicitlyEnabled: string[] = [];
+  const unresolvedToggles: string[] = [];
   for (const toggle of MODALITY_TOGGLES) {
     const value = getNestedValue(loggingConfig, toggle);
+    if (value === undefined) continue;
     if (value === false) explicitlyDisabled.push(toggle);
     else if (value === true) explicitlyEnabled.push(toggle);
+    else if (isUnresolvedScalar(value)) unresolvedToggles.push(toggle);
+  }
+
+  // If any modality toggle is driven by a var/local/data/module reference, we
+  // cannot statically determine whether logging will actually deliver events.
+  // Report INCONCLUSIVE rather than falling through to the all-disabled FAIL
+  // check (which silently passes when toggles aren't literal `false`).
+  if (unresolvedToggles.length > 0) {
+    return {
+      ruleId: 'S-12.1.1',
+      status: 'INCONCLUSIVE',
+      filePath: config.filePath,
+      line,
+      description:
+        `Bedrock logging resource "${config.name}" has non-literal modality toggle(s): ` +
+        `${unresolvedToggles.join(', ')}. Their effective value depends on a Terraform ` +
+        `variable, local, data source, or module output and cannot be evaluated from source alone.`,
+      remediation:
+        `Inline literal true/false for *_data_delivery_enabled toggles, omit them entirely ` +
+        `(AWS enables all modalities by default when unset), or rerun the scan against ` +
+        `terraform plan output where references are resolved. Why: an expression-driven ` +
+        `toggle can hide an all-disabled config that AWS will accept but never write events for.` +
+        agentRemediationAddendum(hasAgent, agentNames),
+      regulatoryReference: REGULATORY_REFERENCE,
+      nistReference: NIST_REFERENCE,
+      isoReference: ISO_REFERENCE,
+    };
   }
 
   if (explicitlyEnabled.length === 0 && explicitlyDisabled.length === MODALITY_TOGGLES.length) {
@@ -204,68 +217,14 @@ function agentRemediationAddendum(hasAgent: boolean, agentNames: string[]): stri
 function buildRemoteModuleInconclusive(
   ruleId: string,
   remoteModules: ReturnType<typeof findRemoteModules>,
-  hint: ExternalLoggingHint,
 ): Finding {
   const names = remoteModules.map((m) => `"${m.name}"`).join(', ');
-  const bedrockRelated = hint.modules.filter((m) => m.isRemote);
-
-  let extra = '';
-  if (bedrockRelated.length > 0) {
-    const detail = bedrockRelated
-      .map((m) => describeModuleHint(m))
-      .join('; ');
-    extra = ` Module${bedrockRelated.length === 1 ? '' : 's'} ${detail} appear${bedrockRelated.length === 1 ? 's' : ''} Bedrock-logging-related.`;
-  }
-
   return {
     ruleId,
     status: 'INCONCLUSIVE',
     filePath: '',
-    description: `No Bedrock resources found in scanned files, but remote module(s) ${names} could not be inspected. Bedrock usage and logging config may be defined inside those modules.${extra}`,
+    description: `No Bedrock resources found in scanned files, but remote module(s) ${names} could not be inspected. Bedrock usage and logging config may be defined inside those modules.`,
     remediation: RUN_PLAN_HINT,
-    regulatoryReference: REGULATORY_REFERENCE,
-    nistReference: NIST_REFERENCE,
-    isoReference: ISO_REFERENCE,
-  };
-}
-
-function buildExternalHintInconclusive(
-  ruleId: string,
-  direct: DirectUsage[],
-  indirect: IndirectUsage,
-  hint: ExternalLoggingHint,
-  hasAgent: boolean,
-  agentNames: string[],
-): Finding {
-  const usageSummary = describeUsage(direct, indirect);
-  const hintParts: string[] = [];
-
-  if (hint.modules.length > 0) {
-    hintParts.push(
-      `module call(s) ${hint.modules.map(describeModuleHint).join('; ')}`,
-    );
-  }
-  if (hint.loggingRefs.length > 0) {
-    hintParts.push(
-      `cross-stack reference(s) ${hint.loggingRefs
-        .map((r) => `${r.resourceAddress} → data.terraform_remote_state.${r.remoteStateName}.outputs.${r.outputKey}`)
-        .join('; ')}`,
-    );
-  }
-  if (hint.baselineState.length > 0 && hint.loggingRefs.length === 0) {
-    // Only mention baseline-state on its own when there is no concrete logging
-    // reference (otherwise the loggingRefs message already names it).
-    hintParts.push(
-      `baseline remote-state data source(s) ${hint.baselineState.map((s) => s.dataAddress).join(', ')}`,
-    );
-  }
-
-  return {
-    ruleId,
-    status: 'INCONCLUSIVE',
-    filePath: '',
-    description: `${usageSummary} No aws_bedrock_model_invocation_logging_configuration in scanned files, but ${hintParts.join(' and ')} suggest logging is configured externally. Compliance cannot be verified from these files alone.`,
-    remediation: RUN_PLAN_HINT + agentRemediationAddendum(hasAgent, agentNames),
     regulatoryReference: REGULATORY_REFERENCE,
     nistReference: NIST_REFERENCE,
     isoReference: ISO_REFERENCE,
@@ -326,7 +285,7 @@ function buildPermissiveInconclusive(
     ruleId,
     status: 'INCONCLUSIVE',
     filePath: '',
-    description: `${usageSummary} No aws_bedrock_model_invocation_logging_configuration found in scanned files, and no cross-stack logging evidence was detected. If logging is configured in a separate stack, scan that directory too. Pass --strict-account-logging if this directory covers the entire infra estate and missing logging should be treated as FAIL.`,
+    description: `${usageSummary} No aws_bedrock_model_invocation_logging_configuration found in scanned files. If logging is configured in a separate stack, scan that directory too. Pass --strict-account-logging if this directory covers the entire infra estate and missing logging should be treated as FAIL.`,
     remediation: RUN_PLAN_HINT + agentRemediationAddendum(hasAgent, agentNames),
     regulatoryReference: REGULATORY_REFERENCE,
     nistReference: NIST_REFERENCE,
@@ -361,18 +320,4 @@ function describeUsage(direct: DirectUsage[], indirect: IndirectUsage): string {
     );
   }
   return parts.join(' ');
-}
-
-function describeModuleHint(m: {
-  name: string;
-  source: string | undefined;
-  isRemote: boolean;
-  matchedTokens: string[];
-  matchedInputKeys: string[];
-}): string {
-  const sourceFragment = m.source ? ` (source: ${m.source})` : '';
-  const reasons: string[] = [];
-  if (m.matchedTokens.length > 0) reasons.push(`name token: ${m.matchedTokens.join(', ')}`);
-  if (m.matchedInputKeys.length > 0) reasons.push(`inputs: ${m.matchedInputKeys.join(', ')}`);
-  return `"${m.name}"${sourceFragment} [${reasons.join(' | ')}]`;
 }

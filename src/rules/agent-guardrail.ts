@@ -1,5 +1,6 @@
 import { ScanRule, Finding, ParsedFile, ScanContext } from '../types';
 import { findResources, findResourceLine, getNestedValue } from '../utils/resource-helpers';
+import { isUnresolvedScalar } from '../utils/literal';
 
 const REGULATORY_REFERENCE = 'EU AI Act Article 9 - Risk management system for high-risk AI systems';
 const NIST_REFERENCE =
@@ -96,6 +97,36 @@ export const agentGuardrailRule: ScanRule = {
           remediation:
             'Set guardrail_identifier to the ID (or ARN) of an aws_bedrock_guardrail resource. ' +
             `Why: ${RATIONALE} ${SCOPE_NOTE}`,
+          regulatoryReference: REGULATORY_REFERENCE,
+          nistReference: NIST_REFERENCE,
+          isoReference: ISO_REFERENCE,
+        };
+      }
+
+      // If guardrail_identifier or guardrail_version is expression-driven
+      // (var/local/data/module reference), we cannot prove the attached
+      // guardrail is a real, versioned resource. Report INCONCLUSIVE rather
+      // than passing optimistically - this is the conservative-by-default
+      // behaviour the README promises.
+      const idUnresolved = isUnresolvedScalar(id);
+      const versionUnresolved = version !== undefined && isUnresolvedScalar(version);
+      if (idUnresolved || versionUnresolved) {
+        const fields: string[] = [];
+        if (idUnresolved) fields.push(`guardrail_identifier=${id}`);
+        if (versionUnresolved) fields.push(`guardrail_version=${version}`);
+        return {
+          ruleId: this.id,
+          status: 'INCONCLUSIVE' as const,
+          filePath: agent.filePath,
+          line,
+          description:
+            `Bedrock Agent "${agent.name}" attaches a guardrail via a non-literal expression ` +
+            `(${fields.join(', ')}). The scanner cannot statically verify that the attached ` +
+            `guardrail exists or is pinned to a numbered version.`,
+          remediation:
+            'Inline a literal guardrail_identifier and a numbered guardrail_version, or rerun ' +
+            'the scan with resolved values (e.g. via terraform plan output) so attachment can ' +
+            `be verified. Why: ${RATIONALE} ${SCOPE_NOTE}`,
           regulatoryReference: REGULATORY_REFERENCE,
           nistReference: NIST_REFERENCE,
           isoReference: ISO_REFERENCE,

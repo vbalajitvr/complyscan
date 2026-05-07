@@ -122,6 +122,87 @@ function resolveAwsRef(
   return { kind: 'address', value: `${resourceType}.${resourceName}`, resourceType, resourceName };
 }
 
+/**
+ * Resolve a `var.X` or `local.X` reference to its underlying scalar value
+ * (number, boolean, or literal string) by reading the variable default or the
+ * locals block, scoped to the same module directory as `sourceFilePath`.
+ *
+ * Use this for fields where hcl2json would have emitted a real number/boolean
+ * if the source were literal (e.g. `retention_in_days = var.log_retention_days`).
+ * `resolveExpression` cannot serve this case because its return type is locked
+ * to string-or-address.
+ *
+ * Returns undefined when the expression is not a simple var/local ref or when
+ * the underlying default is itself an expression / not present.
+ */
+export function resolveScalarReference(
+  expr: unknown,
+  files: ParsedFile[],
+  sourceFilePath?: string,
+): { kind: 'literal'; value: string | number | boolean } | undefined {
+  if (typeof expr !== 'string') return undefined;
+
+  const interpMatch = expr.match(INTERP);
+  if (!interpMatch && expr.includes('${')) return undefined;
+  const inner = interpMatch ? interpMatch[1] : expr;
+
+  const varMatch = inner.match(VAR_REF);
+  if (varMatch) {
+    const value = readVariableScalarDefault(varMatch[1], files, sourceFilePath);
+    if (value !== undefined) return { kind: 'literal', value };
+    return undefined;
+  }
+
+  const localMatch = inner.match(LOCAL_REF);
+  if (localMatch) {
+    const value = readLocalScalar(localMatch[1], files, sourceFilePath);
+    if (value !== undefined) return { kind: 'literal', value };
+    return undefined;
+  }
+
+  return undefined;
+}
+
+function readVariableScalarDefault(
+  name: string,
+  files: ParsedFile[],
+  sourceFilePath?: string,
+): string | number | boolean | undefined {
+  const sourceDir = sourceFilePath ? path.dirname(sourceFilePath) : undefined;
+  for (const file of files) {
+    if (sourceDir && path.dirname(file.filePath) !== sourceDir) continue;
+    const variables = file.json.variable;
+    if (!variables) continue;
+    const block = variables[name];
+    if (!block) continue;
+    const body = Array.isArray(block) ? block[0] : block;
+    const def = (body as Record<string, unknown> | undefined)?.default;
+    if (typeof def === 'number' || typeof def === 'boolean') return def;
+    if (typeof def === 'string' && !def.includes('${') && !looksLikeBareRef(def)) return def;
+  }
+  return undefined;
+}
+
+function readLocalScalar(
+  name: string,
+  files: ParsedFile[],
+  sourceFilePath?: string,
+): string | number | boolean | undefined {
+  const sourceDir = sourceFilePath ? path.dirname(sourceFilePath) : undefined;
+  for (const file of files) {
+    if (sourceDir && path.dirname(file.filePath) !== sourceDir) continue;
+    const localsBlocks = file.json.locals;
+    if (!Array.isArray(localsBlocks)) continue;
+    for (const block of localsBlocks) {
+      if (typeof block !== 'object' || block === null) continue;
+      const value = (block as Record<string, unknown>)[name];
+      if (typeof value === 'number' || typeof value === 'boolean') return value;
+      if (typeof value === 'string' && !value.includes('${') && !looksLikeBareRef(value)) return value;
+    }
+  }
+  return undefined;
+}
+
 function resolveVariableDefault(
   name: string,
   files: ParsedFile[],

@@ -34,9 +34,31 @@ This document describes the internal pipeline of `infrarails`. For installation,
    +--------+---------+
             | Finding[]
    +--------v---------+
-   |    Formatter     |   src/formatter.ts - terminal, JSON, or HTML
+   |    Formatter     |   src/formatter.ts - terminal, JSON, HTML, or PDF
    +------------------+
 ```
+
+The CLI ([src/index.ts](src/index.ts)) validates `--format` against the four supported values and exits with code `2` on an unknown value, so an older globally-installed binary asked for `pdf` cannot silently fall through to terminal mode and write ANSI text into a `.pdf` file. PDF additionally requires `-o`: it is binary and cannot be sensibly streamed to a TTY.
+
+### PDF rendering
+
+PDF output is generated procedurally with [`pdfkit`](https://pdfkit.org/) rather than by rendering HTML through a headless browser. Reasons:
+
+- **No Chromium dependency.** Shipping a headless browser would add ~150MB and require system libraries (`libnss3`, `libatk1.0-0`, ...) that are awkward in CI containers and Lambda layers.
+- **Deterministic layout.** Procedural drawing gives stable pagination across runs, which matters for diffing reports.
+- **Portable.** `pdfkit` is pure JS, so the same code path works on macOS, Linux, and inside WSL without per-OS install steps.
+
+The trade-off is that the PDF and HTML formatters do not share a renderer — the layout is reimplemented using `pdfkit` primitives (text, rounded rects, framework-coloured pills) rather than CSS. Both formats follow the same visual language (status pills, grouped sections, framework refs) but neither is a translation of the other.
+
+### Platform note: how the parser invokes hcl2json
+
+The parser ([src/parser.ts](src/parser.ts)) invokes `hcl2json` via `spawnSync('hcl2json', [], { input: rawHcl })` — piping the HCL source over stdin with no shell in between. This is portable across macOS, Linux, and native Windows:
+
+- **No `/bin/bash` dependency** — earlier revisions used `execSync` with `shell: '/bin/bash'` and a here-string (`hcl2json <<< '...'`), which broke native Windows. The current call uses no shell, so Node resolves the executable directly (`hcl2json` on POSIX, `hcl2json.exe` on win32).
+- **No temp files** — the `.tf` source is piped over stdin, so we never write to disk between the file read and `hcl2json`.
+- **No quote-escaping** — the previous bash here-string had to escape single quotes in the HCL source, which is a known footgun on configurations containing arbitrary string literals. Stdin avoids the problem entirely.
+
+Errors surface with the file path, the `hcl2json` exit status, and the captured stderr, so a syntax error in a single `.tf` file produces a debuggable message rather than a raw `Error: Command failed`.
 
 ---
 
@@ -89,7 +111,7 @@ Remote modules (registry, git, http) are not fetched - their contents are invisi
 | `logGroupNames` | `string[]` | Resolved CloudWatch log group names that Bedrock writes to. Used to scope `S-12.1.2a`. |
 | `unresolvedBucketRefs` | `UnresolvedRef[]` | Bucket references that could not be resolved statically. Phase 2 rules emit `INCONCLUSIVE` per ref. |
 | `unresolvedGroupRefs` | `UnresolvedRef[]` | Log-group references that could not be resolved statically. Same handling. |
-| `strictAccountLogging` | `boolean` | When true, missing logging is `FAIL` instead of `INCONCLUSIVE`. Cross-stack baseline hints still downgrade to `INCONCLUSIVE`. |
+| `strictAccountLogging` | `boolean` | When true, missing logging is `FAIL` instead of `INCONCLUSIVE`. The flag is the only knob that flips this verdict — no naming-based heuristics (cross-stack remote-state references, baseline-named modules, logging-shaped input keys) downgrade it. |
 
 ---
 

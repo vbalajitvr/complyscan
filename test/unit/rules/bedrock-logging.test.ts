@@ -307,8 +307,8 @@ describe('S-12.1.1 Bedrock Logging', () => {
     });
   });
 
-  describe('Fix-4: external-logging hints override strict mode', () => {
-    it('direct usage + Bedrock-related remote module → INCONCLUSIVE even with strict-account-logging', () => {
+  describe('cross-stack references no longer suppress the verdict', () => {
+    it('strict mode + Bedrock-related remote module → FAIL (heuristic suppression removed)', () => {
       const files = [
         {
           filePath: 'main.tf',
@@ -336,12 +336,11 @@ describe('S-12.1.1 Bedrock Logging', () => {
         emptyContext({ strictAccountLogging: true }),
       );
 
-      expect(findings[0].status).toBe('INCONCLUSIVE');
-      expect(findings[0].description).toMatch(/module call/);
-      expect(findings[0].description).toContain('bedrock_logging');
+      expect(findings[0].status).toBe('FAIL');
+      expect(findings[0].description).toMatch(/Strict account-logging mode/);
     });
 
-    it('direct usage + cross-stack reference for log_bucket → INCONCLUSIVE', () => {
+    it('default mode + cross-stack remote-state reference → INCONCLUSIVE without naming the stack', () => {
       const files = [
         {
           filePath: 'main.tf',
@@ -370,9 +369,49 @@ describe('S-12.1.1 Bedrock Logging', () => {
 
       const findings = bedrockLoggingRule.run(files, emptyContext());
 
+      // Permissive default: no logging in scanned files → INCONCLUSIVE.
       expect(findings[0].status).toBe('INCONCLUSIVE');
-      expect(findings[0].description).toContain('account_baseline');
-      expect(findings[0].description).toContain('log_bucket');
+      // The verdict no longer cites the cross-stack reference - the rule does
+      // not infer logging from naming conventions (see resource-helpers.test
+      // for why the heuristic was dropped).
+      expect(findings[0].description).not.toMatch(/cross-stack/);
+      expect(findings[0].description).not.toMatch(/baseline remote-state/);
+    });
+
+    it('strict mode + cross-stack remote-state reference → FAIL (no suppression)', () => {
+      const files = [
+        {
+          filePath: 'main.tf',
+          rawHcl: '',
+          json: {
+            resource: {
+              aws_bedrockagent_agent: { a: [{ agent_name: 'a' }] },
+              aws_s3_bucket_policy: {
+                p: [
+                  {
+                    bucket:
+                      '${data.terraform_remote_state.account_baseline.outputs.log_bucket}',
+                    policy: '{}',
+                  },
+                ],
+              },
+            },
+            data: {
+              terraform_remote_state: {
+                account_baseline: [{ backend: 's3' }],
+              },
+            },
+          },
+        },
+      ];
+
+      const findings = bedrockLoggingRule.run(
+        files,
+        emptyContext({ strictAccountLogging: true }),
+      );
+
+      expect(findings[0].status).toBe('FAIL');
+      expect(findings[0].description).toMatch(/Strict account-logging mode/);
     });
   });
 });

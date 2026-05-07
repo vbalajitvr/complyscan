@@ -1,5 +1,6 @@
 import { ScanRule, Finding, ParsedFile, ScanContext } from '../types';
 import { findResources, findResourceLine, getNestedValue, matchesBucket, inconclusiveFromUnresolved } from '../utils/resource-helpers';
+import { isUnresolvedScalar } from '../utils/literal';
 
 const MIN_RETENTION_DAYS = 180;
 const RECOMMENDED_RETENTION_DAYS = 365;
@@ -90,12 +91,37 @@ export const s3LifecycleRule: ScanRule = {
       const rulesArray = Array.isArray(rules) ? rules : rules ? [rules] : [];
 
       let maxDays = 0;
+      let sawUnresolvedDays = false;
       for (const rule of rulesArray) {
         if (typeof rule !== 'object' || rule === null) continue;
         const days = getNestedValue(rule, 'expiration.days');
         if (typeof days === 'number' && days > maxDays) {
           maxDays = days;
+        } else if (isUnresolvedScalar(days)) {
+          sawUnresolvedDays = true;
         }
+      }
+
+      // Any expiration.days driven by a var/local/data/module reference means
+      // we can't compare against the threshold. If no literal day count beat
+      // the threshold and at least one rule was expression-driven, surface
+      // INCONCLUSIVE rather than falling through to the "no expiration" FAIL.
+      if (sawUnresolvedDays && maxDays < MIN_RETENTION_DAYS) {
+        findings.push({
+          ruleId: this.id,
+          status: 'INCONCLUSIVE',
+          filePath: matching.filePath,
+          line,
+          description: `Lifecycle configuration for bucket "${bucketName}" has at least one expiration.days set to a non-literal expression; the scanner cannot determine whether retention meets the ${MIN_RETENTION_DAYS}-day floor.`,
+          remediation:
+            `Inline a literal expiration.days >= ${MIN_RETENTION_DAYS} ` +
+            `(recommended: ${RECOMMENDED_RETENTION_DAYS}) on at least one rule, or rerun the ` +
+            `scan against terraform plan output where references are resolved.`,
+          regulatoryReference: this.regulatoryReference,
+          nistReference: this.nistReference,
+          isoReference: this.isoReference,
+        });
+        continue;
       }
 
       if (maxDays === 0) {

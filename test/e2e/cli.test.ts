@@ -190,18 +190,20 @@ describeIf('CLI e2e', () => {
       expect(finding?.description).toMatch(/Strict account-logging mode/);
     });
 
-    it('remote-module-bedrock-logging: remote bedrock-named module → INCONCLUSIVE (Fix 4 path 1)', () => {
+    it('remote-module-bedrock-logging (default): direct Bedrock + no logging in scanned files → INCONCLUSIVE', () => {
       const result = runCli(`${combosDir}/remote-module-bedrock-logging --format json`);
       const parsed = JSON.parse(result.stdout);
       const finding = parsed.findings.find(
         (f: { ruleId: string }) => f.ruleId === 'S-12.1.1',
       );
       expect(finding?.status).toBe('INCONCLUSIVE');
-      expect(finding?.description).toContain('bedrock_logging');
-      expect(finding?.description).toContain('log_bucket');
+      // No naming-based suppression: the verdict does not cite the module name
+      // or the log_bucket input as evidence of external logging.
+      expect(finding?.description).not.toMatch(/module call/);
+      expect(finding?.description).not.toMatch(/cross-stack/);
     });
 
-    it('remote-module-bedrock-logging --strict-account-logging: hint still wins → INCONCLUSIVE', () => {
+    it('remote-module-bedrock-logging --strict-account-logging: → FAIL (no heuristic suppression)', () => {
       const result = runCli(
         `${combosDir}/remote-module-bedrock-logging --strict-account-logging --format json`,
       );
@@ -209,17 +211,31 @@ describeIf('CLI e2e', () => {
       const finding = parsed.findings.find(
         (f: { ruleId: string }) => f.ruleId === 'S-12.1.1',
       );
-      expect(finding?.status).toBe('INCONCLUSIVE');
+      expect(finding?.status).toBe('FAIL');
+      expect(finding?.description).toMatch(/Strict account-logging mode/);
     });
 
-    it('cross-stack-baseline-logging: terraform_remote_state reference → INCONCLUSIVE (Fix 4 path 2)', () => {
+    it('cross-stack-baseline-logging (default): direct Bedrock + remote-state ref → INCONCLUSIVE without naming the stack', () => {
       const result = runCli(`${combosDir}/cross-stack-baseline-logging --format json`);
       const parsed = JSON.parse(result.stdout);
       const finding = parsed.findings.find(
         (f: { ruleId: string }) => f.ruleId === 'S-12.1.1',
       );
       expect(finding?.status).toBe('INCONCLUSIVE');
-      expect(finding?.description).toContain('account_baseline');
+      expect(finding?.description).not.toMatch(/baseline remote-state/);
+      expect(finding?.description).not.toMatch(/cross-stack/);
+    });
+
+    it('cross-stack-baseline-logging --strict-account-logging: → FAIL (no heuristic suppression)', () => {
+      const result = runCli(
+        `${combosDir}/cross-stack-baseline-logging --strict-account-logging --format json`,
+      );
+      const parsed = JSON.parse(result.stdout);
+      const finding = parsed.findings.find(
+        (f: { ruleId: string }) => f.ruleId === 'S-12.1.1',
+      );
+      expect(finding?.status).toBe('FAIL');
+      expect(finding?.description).toMatch(/Strict account-logging mode/);
     });
 
     it('bedrock-named-local-module: PASS (regression guard — local module logging is found)', () => {

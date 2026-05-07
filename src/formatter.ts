@@ -443,3 +443,310 @@ ${sections}
 </html>
 `;
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// PDF
+// ─────────────────────────────────────────────────────────────────────
+
+// Pure-JS PDF generation via pdfkit - no Chromium, no system libraries.
+// We do NOT reuse formatHtml here because the only way to render HTML to PDF
+// without a browser is to ship one. Instead we draw the report procedurally
+// using pdfkit's primitives (text, rectangles, rounded pills) - the layout is
+// simpler than the HTML version but matches the same visual language: status
+// pills, framework-coloured ref pills, and grouped sections.
+
+const PDF_STATUS_COLORS: Record<FindingStatus, string> = {
+  PASS: '#16a34a',
+  FAIL: '#dc2626',
+  WARN: '#d97706',
+  SKIP: '#6b7280',
+  INCONCLUSIVE: '#9333ea',
+};
+
+const PDF_FRAMEWORK_FG: Record<string, string> = {
+  'EU AI Act': '#1e40af',
+  'NIST AI RMF': '#0f766e',
+  'ISO/IEC 42001': '#7e22ce',
+};
+const PDF_FRAMEWORK_BG: Record<string, string> = {
+  'EU AI Act': '#eff6ff',
+  'NIST AI RMF': '#f0fdfa',
+  'ISO/IEC 42001': '#faf5ff',
+};
+
+const PDF_TEXT = '#111827';
+const PDF_MUTED = '#6b7280';
+const PDF_BORDER = '#e5e7eb';
+const PDF_REMEDIATION_BG = '#ecfdf5';
+
+type PDFDoc = PDFKit.PDFDocument;
+
+// Reserve vertical space; if it would overflow the current page, break first.
+// This prevents orphaned section headers and split status pills.
+function ensureRoom(doc: PDFDoc, needed: number) {
+  const bottom = doc.page.height - doc.page.margins.bottom;
+  if (doc.y + needed > bottom) doc.addPage();
+}
+
+function drawPill(
+  doc: PDFDoc,
+  x: number,
+  y: number,
+  text: string,
+  bg: string,
+  fg: string,
+  fontSize = 7,
+): number {
+  doc.font('Helvetica-Bold').fontSize(fontSize);
+  const padX = 4;
+  const padY = 2;
+  const textWidth = doc.widthOfString(text);
+  const w = textWidth + padX * 2;
+  const h = fontSize + padY * 2 + 1;
+  doc.roundedRect(x, y, w, h, 2).fill(bg);
+  doc.fillColor(fg).text(text, x + padX, y + padY, { lineBreak: false });
+  return w;
+}
+
+function drawHeader(doc: PDFDoc, total: number, generatedAt: string) {
+  doc.font('Helvetica-Bold').fontSize(20).fillColor(PDF_TEXT)
+    .text('infrarails - Compliance Report');
+  doc.moveDown(0.2);
+  doc.font('Helvetica').fontSize(10).fillColor(PDF_MUTED)
+    .text('EU AI Act Article 12  ·  NIST AI RMF  ·  ISO/IEC 42001');
+  doc.fontSize(9).fillColor(PDF_MUTED)
+    .text(`${generatedAt}  ·  ${total} findings`);
+  doc.moveDown(0.8);
+}
+
+function drawSummaryBar(doc: PDFDoc, s: ScanSummary) {
+  const x = doc.page.margins.left;
+  const y = doc.y;
+  const w = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+  const h = 52;
+
+  doc.roundedRect(x, y, w, h, 6).fillAndStroke('#f8fafc', PDF_BORDER);
+
+  const stats: { count: number; label: string; color: string }[] = [
+    { count: s.fail, label: 'failed', color: PDF_STATUS_COLORS.FAIL },
+    { count: s.warn, label: 'warnings', color: PDF_STATUS_COLORS.WARN },
+    { count: s.inconclusive, label: 'inconclusive', color: PDF_STATUS_COLORS.INCONCLUSIVE },
+    { count: s.pass, label: 'passed', color: PDF_STATUS_COLORS.PASS },
+    { count: s.skip, label: 'skipped', color: PDF_STATUS_COLORS.SKIP },
+  ];
+  const cellW = w / stats.length;
+  stats.forEach((st, i) => {
+    const cx = x + i * cellW;
+    doc.font('Helvetica-Bold').fontSize(18).fillColor(st.color)
+      .text(String(st.count), cx, y + 8, { width: cellW, align: 'center', lineBreak: false });
+    doc.font('Helvetica').fontSize(9).fillColor(PDF_MUTED)
+      .text(st.label, cx, y + 32, { width: cellW, align: 'center', lineBreak: false });
+  });
+
+  doc.y = y + h + 12;
+  doc.x = doc.page.margins.left;
+}
+
+function drawSectionHeader(doc: PDFDoc, status: FindingStatus, count: number) {
+  ensureRoom(doc, 40);
+  const x = doc.page.margins.left;
+  const y = doc.y;
+  const w = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+  const h = 26;
+  const padX = 12;
+  const gap = 14;
+
+  doc.roundedRect(x, y, w, h, 4).fill(PDF_STATUS_COLORS[status]);
+
+  // Status word - measure width so we can place the label dynamically.
+  // "INCONCLUSIVE" at Helvetica-Bold 10pt is wider than the old hardcoded 60pt
+  // gap, which caused it to overprint the label text.
+  doc.font('Helvetica-Bold').fontSize(10).fillColor('#ffffff');
+  const statusW = doc.widthOfString(status);
+  doc.text(status, x + padX, y + 8, { lineBreak: false });
+
+  doc.font('Helvetica').fontSize(10).fillColor('#ffffff')
+    .text(STATUS_LABELS[status], x + padX + statusW + gap, y + 8, {
+      lineBreak: false,
+    });
+
+  doc.font('Helvetica-Bold').fontSize(10).fillColor('#ffffff')
+    .text(String(count), x, y + 8, { width: w - padX, align: 'right', lineBreak: false });
+
+  doc.y = y + h + 10;
+  doc.x = doc.page.margins.left;
+}
+
+function drawFinding(doc: PDFDoc, f: Finding) {
+  const x = doc.page.margins.left;
+  const w = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+
+  // Reserve a rough minimum so we don't split the head row across pages.
+  ensureRoom(doc, 70);
+
+  const headY = doc.y;
+  // Status pill
+  const pillW = drawPill(
+    doc, x, headY, f.status, PDF_STATUS_COLORS[f.status], '#ffffff', 8,
+  );
+  // Rule ID (mono) - right of the pill on the same row
+  doc.font('Courier-Bold').fontSize(9).fillColor(PDF_TEXT)
+    .text(f.ruleId, x + pillW + 6, headY + 2, { lineBreak: false });
+
+  doc.y = headY + 16;
+  doc.x = x;
+
+  // File location on its own line below the head row. Long paths (deep
+  // monorepos, absolute paths) used to right-align across the full width and
+  // collide with the rule ID; giving them their own line and the full content
+  // width lets them wrap cleanly.
+  if (f.filePath) {
+    doc.moveDown(0.2);
+    const loc = `${f.filePath}${f.line ? `:${f.line}` : ''}`;
+    doc.font('Courier').fontSize(8).fillColor(PDF_MUTED)
+      .text(loc, x, doc.y, { width: w });
+    doc.moveDown(0.5);
+  }
+
+  // Description
+  doc.font('Helvetica').fontSize(9.5).fillColor(PDF_TEXT)
+    .text(f.description, x, doc.y, { width: w });
+  doc.moveDown(0.5);
+
+  // Remediation block
+  if (f.remediation) {
+    const remY = doc.y;
+    const remPadX = 8;
+    const remPadY = 6;
+    doc.font('Helvetica').fontSize(9).fillColor(PDF_TEXT);
+    const remHeight = doc.heightOfString(f.remediation, {
+      width: w - remPadX * 2 - 12,
+    }) + remPadY * 2;
+    ensureRoom(doc, remHeight + 4);
+    const ry = doc.y;
+    doc.rect(x, ry, w, remHeight).fill(PDF_REMEDIATION_BG);
+    doc.rect(x, ry, 3, remHeight).fill(PDF_STATUS_COLORS.PASS);
+    doc.fillColor(PDF_STATUS_COLORS.PASS).font('Helvetica-Bold').fontSize(10)
+      .text('→', x + remPadX, ry + remPadY - 1, { lineBreak: false });
+    doc.font('Helvetica').fontSize(9).fillColor(PDF_TEXT)
+      .text(f.remediation, x + remPadX + 12, ry + remPadY, {
+        width: w - remPadX * 2 - 12,
+      });
+    doc.y = ry + remHeight + 4;
+    doc.x = x;
+  }
+
+  // Refs - framework label + colored pills per item
+  const refs = findingRefs(f);
+  if (refs.length > 0) {
+    let cx = x;
+    let cy = doc.y;
+    const lineH = 14;
+    for (const r of refs) {
+      // Framework label
+      doc.font('Helvetica-Bold').fontSize(7).fillColor(PDF_MUTED);
+      const labelText = r.framework.toUpperCase();
+      const labelW = doc.widthOfString(labelText);
+      if (cx + labelW + 6 > x + w) { cx = x; cy += lineH; }
+      doc.text(labelText, cx, cy + 3, { lineBreak: false });
+      cx += labelW + 4;
+      // Pills
+      for (const item of r.items) {
+        const fg = PDF_FRAMEWORK_FG[r.framework] ?? PDF_TEXT;
+        const bg = PDF_FRAMEWORK_BG[r.framework] ?? '#f3f4f6';
+        doc.font('Helvetica-Bold').fontSize(7);
+        const pw = doc.widthOfString(item.id) + 8;
+        if (cx + pw > x + w) { cx = x; cy += lineH; }
+        drawPill(doc, cx, cy, item.id, bg, fg, 7);
+        cx += pw + 4;
+      }
+      cx += 8;
+    }
+    doc.y = cy + lineH;
+    doc.x = x;
+  }
+
+  // Card separator with breathing room above and below so findings do not
+  // visually run together.
+  doc.moveDown(0.5);
+  const sepY = doc.y;
+  doc.strokeColor(PDF_BORDER).lineWidth(0.5)
+    .moveTo(x, sepY).lineTo(x + w, sepY).stroke();
+  doc.y = sepY + 12;
+}
+
+function drawDisclaimer(doc: PDFDoc) {
+  ensureRoom(doc, 90);
+  const x = doc.page.margins.left;
+  const w = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+  const text =
+    'This report reflects the findings of an automated static analysis of your AWS AI infrastructure ' +
+    'configuration against selected controls from the EU AI Act, NIST AI RMF, and ISO/IEC 42001. ' +
+    'A passing result indicates that the scanned Terraform configuration satisfies the specific ' +
+    'infrastructure-layer prerequisite checked - it does not constitute compliance with any of these ' +
+    'frameworks, nor does it substitute for a formal audit, certification, or conformity assessment ' +
+    'conducted by an accredited body. Compliance with the EU AI Act, NIST AI RMF, and ISO/IEC 42001 ' +
+    'requires organisational, procedural, and governance measures that are outside the scope of ' +
+    'infrastructure scanning. This report should be treated as a pre-audit readiness input, not an ' +
+    'attestation of conformance.';
+
+  doc.moveDown(0.5);
+  const y = doc.y;
+  doc.font('Helvetica').fontSize(8).fillColor(PDF_MUTED);
+  const h = doc.heightOfString(text, { width: w - 16 }) + 28;
+  doc.roundedRect(x, y, w, h, 4).fillAndStroke('#f8fafc', PDF_BORDER);
+  doc.font('Helvetica-Bold').fontSize(9).fillColor(PDF_TEXT)
+    .text('Disclaimer', x + 8, y + 8, { lineBreak: false });
+  doc.font('Helvetica').fontSize(8).fillColor(PDF_MUTED)
+    .text(text, x + 8, y + 22, { width: w - 16 });
+  doc.y = y + h;
+}
+
+export async function formatPdf(findings: Finding[]): Promise<Buffer> {
+  let PDFDocument: typeof import('pdfkit');
+  try {
+    const mod = await import('pdfkit');
+    PDFDocument = (mod as { default?: typeof import('pdfkit') }).default ?? mod;
+  } catch {
+    throw new Error(
+      'PDF output requires pdfkit. Install it with: npm install pdfkit',
+    );
+  }
+
+  const doc = new (PDFDocument as unknown as new (opts: object) => PDFDoc)({
+    size: 'A4',
+    margin: 50,
+    info: {
+      Title: 'infrarails - Compliance Report',
+      Producer: 'infrarails',
+    },
+  });
+
+  const chunks: Buffer[] = [];
+  doc.on('data', (c: Buffer) => chunks.push(c));
+  const done = new Promise<Buffer>((resolve, reject) => {
+    doc.on('end', () => resolve(Buffer.concat(chunks)));
+    doc.on('error', reject);
+  });
+
+  const summary = summarize(findings);
+  const groups = groupByStatus(findings);
+  const generatedAt =
+    new Date().toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
+
+  drawHeader(doc, summary.total, generatedAt);
+  drawSummaryBar(doc, summary);
+
+  for (const status of STATUS_ORDER) {
+    const items = groups.get(status)!;
+    if (items.length === 0) continue;
+    drawSectionHeader(doc, status, items.length);
+    for (const f of items) drawFinding(doc, f);
+    doc.moveDown(0.3);
+  }
+
+  drawDisclaimer(doc);
+
+  doc.end();
+  return done;
+}

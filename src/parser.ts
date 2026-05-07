@@ -1,4 +1,4 @@
-import { execSync } from 'child_process';
+import { spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import { ParsedFile, HCL2JSONOutput } from './types';
@@ -51,12 +51,28 @@ export function parseTfFile(filePath: string): ParsedFile {
   if (filePath.endsWith('.tf.json')) {
     json = JSON.parse(rawHcl);
   } else {
-    const stdout = execSync(`hcl2json <<< '${rawHcl.replace(/'/g, "'\\''")}'`, {
+    // Pipe HCL to hcl2json over stdin via spawnSync. We deliberately do NOT
+    // use a shell here: the previous bash here-string (`hcl2json <<< '...'`)
+    // tied us to /bin/bash and required fragile single-quote escaping. spawn
+    // with no shell is portable across macOS, Linux, and native Windows
+    // (Node resolves `hcl2json.exe` automatically on win32).
+    const result = spawnSync('hcl2json', [], {
+      input: rawHcl,
       encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-      shell: '/bin/bash',
     });
-    json = JSON.parse(stdout);
+    if (result.error) {
+      throw new Error(
+        `Failed to invoke hcl2json for ${filePath}: ${result.error.message}`,
+      );
+    }
+    if (result.status !== 0) {
+      const stderr = (result.stderr || '').trim();
+      throw new Error(
+        `hcl2json exited with status ${result.status} on ${filePath}` +
+          (stderr ? `: ${stderr}` : ''),
+      );
+    }
+    json = JSON.parse(result.stdout);
   }
 
   return { filePath, json, rawHcl };

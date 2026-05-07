@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { cwRetentionRule } from '../../../src/rules/cw-retention';
+import { ParsedFile } from '../../../src/types';
 import { makeParsedFile, emptyContext, bedrockContext } from './helpers';
 
 describe('S-12.1.2a CloudWatch Retention', () => {
@@ -114,6 +115,95 @@ describe('S-12.1.2a CloudWatch Retention', () => {
 
     expect(findings).toHaveLength(1);
     expect(findings[0].status).toBe('PASS');
+  });
+
+  it('should PASS when retention_in_days references a numeric variable default >= 365', () => {
+    const ctx = bedrockContext();
+    const file: ParsedFile = {
+      filePath: 'test.tf',
+      rawHcl: '',
+      json: {
+        variable: { log_retention_days: [{ type: 'number', default: 365 }] },
+        resource: {
+          aws_cloudwatch_log_group: {
+            bedrock_logs: [
+              { name: '/aws/bedrock/invocation-logs', retention_in_days: '${var.log_retention_days}' },
+            ],
+          },
+        },
+      },
+    };
+    const findings = cwRetentionRule.run([file], ctx);
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0].status).toBe('PASS');
+  });
+
+  it('should WARN when retention_in_days references a numeric variable default < 180', () => {
+    const ctx = bedrockContext();
+    const file: ParsedFile = {
+      filePath: 'test.tf',
+      rawHcl: '',
+      json: {
+        variable: { log_retention_days: [{ type: 'number', default: 30 }] },
+        resource: {
+          aws_cloudwatch_log_group: {
+            bedrock_logs: [
+              { name: '/aws/bedrock/invocation-logs', retention_in_days: '${var.log_retention_days}' },
+            ],
+          },
+        },
+      },
+    };
+    const findings = cwRetentionRule.run([file], ctx);
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0].status).toBe('WARN');
+    expect(findings[0].description).toContain('30 days');
+  });
+
+  it('should PASS when retention_in_days references a local with a numeric value', () => {
+    const ctx = bedrockContext();
+    const file: ParsedFile = {
+      filePath: 'test.tf',
+      rawHcl: '',
+      json: {
+        locals: [{ retention: 400 }],
+        resource: {
+          aws_cloudwatch_log_group: {
+            bedrock_logs: [
+              { name: '/aws/bedrock/invocation-logs', retention_in_days: '${local.retention}' },
+            ],
+          },
+        },
+      },
+    };
+    const findings = cwRetentionRule.run([file], ctx);
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0].status).toBe('PASS');
+  });
+
+  it('should remain INCONCLUSIVE when retention variable has no default', () => {
+    const ctx = bedrockContext();
+    const file: ParsedFile = {
+      filePath: 'test.tf',
+      rawHcl: '',
+      json: {
+        variable: { log_retention_days: [{ type: 'number' }] },
+        resource: {
+          aws_cloudwatch_log_group: {
+            bedrock_logs: [
+              { name: '/aws/bedrock/invocation-logs', retention_in_days: '${var.log_retention_days}' },
+            ],
+          },
+        },
+      },
+    };
+    const findings = cwRetentionRule.run([file], ctx);
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0].status).toBe('INCONCLUSIVE');
   });
 
   it('should WARN when retention_in_days is not set', () => {

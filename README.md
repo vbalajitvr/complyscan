@@ -38,8 +38,8 @@ The scanner is **deliberately conservative**: when it cannot prove a control is 
 ## Quick start
 
 ```bash
-# 1. Install hcl2json (one-time, see Prerequisites)
-brew install hcl2json
+# 1. Install hcl2json (one-time, see Prerequisites for per-OS instructions)
+brew install hcl2json            # macOS
 
 # 2. Install infrarails
 npm install -g infrarails
@@ -47,9 +47,12 @@ npm install -g infrarails
 # 3. Scan a Terraform directory
 infrarails ./infra/
 
-# 4. Or generate an HTML report
+# 4. Or generate a shareable PDF / HTML report
+infrarails ./infra/ --format pdf  -o report.pdf
 infrarails ./infra/ --format html -o report.html
 ```
+
+> Runs natively on **macOS, Linux, and Windows** (PowerShell / `cmd.exe`). See [Prerequisites](#prerequisites) for per-OS install steps.
 
 ---
 
@@ -63,7 +66,7 @@ infrarails ./infra/ --format html -o report.html
 | `S-9.x.2` | WARN | 2 | 9 | When Bedrock is in use, at least one `aws_bedrock_guardrail` should be declared in scanned Terraform (presence-level signal; complements `S-9.x.1`) |
 | `S-12.1.1` | FAIL | 1 | 12 | AWS Bedrock model invocation logging is configured when Bedrock is in use |
 | `S-12.1.2a` | WARN | 2 | 12 | CloudWatch log group used for Bedrock logs has a retention policy >= 180 days, or a forwarder pipe to an external log system was detected |
-| `S-12.1.2b` | FAIL | 2 | 12 | S3 bucket used for Bedrock logs has a lifecycle policy >= 365 days |
+| `S-12.1.2b` | FAIL | 2 | 12 | S3 bucket used for Bedrock logs has a lifecycle policy of at least 180 days (FAIL below 180; WARN 180-364; PASS at >= 365) |
 | `S-12.x.1` | WARN | 2 | 12 | S3 log bucket has versioning (or object lock) enabled |
 | `S-12.x.2a` | WARN | 2 | 12 | S3 log bucket has KMS server-side encryption configured |
 | `S-12.x.4` | FAIL | 2 | 12 | A CloudTrail trail is present and enabled |
@@ -71,7 +74,7 @@ infrarails ./infra/ --format html -o report.html
 
 Retention thresholds for `S-12.1.2a`: **PASS** at >= 365 days (or `retention_in_days = 0` for never-expire), **WARN** for everything else. The rule is intentionally WARN-only - in real enterprise estates, retention is often satisfied by a forwarder shipping logs to Datadog/Splunk/SIEM owned by a separate platform repo, by a central log-archive account (Control Tower / Landing Zone), or by an auto-subscription Lambda deployed out-of-band. A static single-repo scan cannot prove that retention is *missing*, so the rule warns rather than fails. When a `aws_cloudwatch_log_subscription_filter` targeting the log group is present in the scanned files, the WARN message says so explicitly; otherwise the message reminds the reader that forwarders are commonly out-of-repo and need to be verified at the destination.
 
-Retention threshold for `S-12.1.2b`: **FAIL** below 365 days.
+Retention thresholds for `S-12.1.2b`: **PASS** at >= 365 days, **WARN** for 180-364 days, **FAIL** below 180 days. The graduated thresholds mirror `S-12.1.2a` on the CloudWatch side: 365 days is the audit-grade target, but a hard fail below 365 would over-flag estates that intentionally tier S3 log retention against a forwarder destination or a central log-archive account. 180 days is the floor below which post-market-monitoring (Article 72) and incident-investigation use cases routinely break.
 
 ---
 
@@ -123,9 +126,7 @@ resource "aws_bedrock_model_invocation_logging_configuration" "main" {
 
 By default, the scanner assumes account-baseline patterns are common (logging configured once at the org/account level, not per-stack) and emits `INCONCLUSIVE` so it doesn't generate false positives for teams with that topology. Pass `--strict-account-logging` to flip this to `FAIL` when you know the entire estate is in scope.
 
-### Cross-stack baseline logging -> INCONCLUSIVE (with reason)
-
-When the scanner sees Bedrock usage *and* hints that logging is wired up via another stack - a `data.terraform_remote_state.account_baseline.outputs.log_bucket` reference, a baseline-logging module call, or an input key like `log_bucket` / `bedrock_logs_bucket` on a module - it emits `INCONCLUSIVE` with the specific cross-stack pointer that triggered the decision. **This overrides `--strict-account-logging`**: when there is positive evidence of external logging, the scanner won't FAIL.
+The decision is **only** driven by what is statically present in the scanned files - whether `aws_bedrock_model_invocation_logging_configuration` exists and (under strict mode) whether the user has asserted this directory is the entire estate. No naming-convention heuristics are applied: a `data.terraform_remote_state.<anything>` reference, a module called `bedrock_logging`, or an input key like `log_bucket` does **not** influence the verdict, because users can name those constructs anything they like and any naming-based suppression is a false positive waiting to happen. If logging really lives in another stack, scan that stack too - or accept the default `INCONCLUSIVE`.
 
 ### Short retention with a CloudWatch subscription filter -> WARN (forwarder-aware)
 
@@ -186,10 +187,10 @@ infrarails <directory> [options]
 
 | Flag | Default | Description |
 |---|---|---|
-| `-f, --format <format>` | `terminal` | Output format: `terminal`, `json`, or `html` |
-| `-o, --output <file>` | stdout | Write the rendered report to a file instead of stdout. Avoids the need to shell-redirect for `html`/`json` and prevents the common footgun of dumping markup into the terminal. When `-f html` or `-f json` is used without `-o` *and* stdout is a TTY, the CLI prints a one-line tip to stderr suggesting `-o`. The tip is silent when piped or redirected, so existing scripts and CI invocations are unaffected. |
+| `-f, --format <format>` | `terminal` | Output format: `terminal`, `json`, `html`, or `pdf`. Unknown values exit with code `2`. `pdf` is binary and **requires `-o`**; passing `--format pdf` without `-o` exits with code `2`. |
+| `-o, --output <file>` | stdout | Write the rendered report to a file instead of stdout. Avoids the need to shell-redirect for `html`/`json` and prevents the common footgun of dumping markup into the terminal. When `-f html` or `-f json` is used without `-o` *and* stdout is a TTY, the CLI prints a one-line tip to stderr suggesting `-o`. The tip is silent when piped or redirected, so existing scripts and CI invocations are unaffected. Required for `--format pdf`. |
 | `--no-strict` | strict on | Treat `INCONCLUSIVE` findings as non-blocking. By default INCONCLUSIVE blocks the exit code like FAIL - for a compliance tool, "we couldn't verify" should not pass a CI gate silently. |
-| `--strict-account-logging` | off | When set, missing `aws_bedrock_model_invocation_logging_configuration` is treated as `FAIL` instead of `INCONCLUSIVE`. Use this only when the scanned tree is the entire infra estate (no separate account-baseline stack). External-logging hints still downgrade to INCONCLUSIVE. |
+| `--strict-account-logging` | off | When set, missing `aws_bedrock_model_invocation_logging_configuration` is treated as `FAIL` instead of `INCONCLUSIVE`. Use this only when the scanned tree is the entire infra estate (no separate account-baseline stack). The flag is the single knob: no naming-based hint downgrades the result. |
 | `--version` | - | Print version |
 | `-h, --help` | - | Print help |
 
@@ -204,6 +205,9 @@ infrarails ./infra/ --format html -o report.html
 
 # Or with shell redirection (still works)
 infrarails ./infra/ --format html > report.html
+
+# Generate a PDF report (recommended for sharing - no SmartScreen warnings on Windows)
+infrarails ./infra/ --format pdf -o report.pdf
 
 # Output machine-readable JSON for CI/CD
 infrarails ./infra/ --format json -o compliance-report.json
@@ -227,37 +231,115 @@ infrarails ./infra/ --strict-account-logging
 
 ## Prerequisites
 
-`infrarails` converts Terraform HCL to JSON internally using [`hcl2json`](https://github.com/tmccombs/hcl2json). Install it before running:
+`infrarails` needs two things on `PATH`:
+
+| Dep | Why | Min version |
+|---|---|---|
+| **Node.js + npm** | Runtime for the CLI | Node 18+ |
+| **[`hcl2json`](https://github.com/tmccombs/hcl2json)** | Converts Terraform HCL → JSON internally | any recent release |
+
+The CLI invokes `hcl2json` via `child_process.spawnSync` over stdin (no shell), so it works the same on macOS, Linux, and native Windows.
+
+### macOS
 
 ```bash
-# macOS
+# Node 18+ (skip if you already have it via nvm/fnm/volta)
+brew install node
+
+# hcl2json
 brew install hcl2json
 
-# Linux - download the binary for your platform from:
-# https://github.com/tmccombs/hcl2json/releases
+# Verify
+node --version && npm --version && hcl2json --version
 ```
 
-**Node.js 18+** is required.
+### Linux (Ubuntu / Debian)
+
+```bash
+# Node 18+ via NodeSource (skip if you already have it)
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+sudo apt-get install -y nodejs
+
+# hcl2json - prebuilt binary from the release page
+curl -fsSL -o /tmp/hcl2json \
+  https://github.com/tmccombs/hcl2json/releases/latest/download/hcl2json_linux_amd64
+sudo install -m 0755 /tmp/hcl2json /usr/local/bin/hcl2json
+
+# Verify
+node --version && npm --version && hcl2json --version
+```
+
+For other distros (Fedora/Arch/etc.), install Node from your package manager and grab the matching `hcl2json_linux_*` binary from the [releases page](https://github.com/tmccombs/hcl2json/releases).
+
+### Windows (PowerShell)
+
+```powershell
+# Node 18+ - via winget, scoop, choco, or installer from https://nodejs.org
+winget install OpenJS.NodeJS.LTS
+
+# hcl2json - download the Windows binary and put it on PATH
+$dest = "$env:USERPROFILE\bin"
+New-Item -ItemType Directory -Force -Path $dest | Out-Null
+Invoke-WebRequest `
+  -Uri "https://github.com/tmccombs/hcl2json/releases/latest/download/hcl2json_windows_amd64.exe" `
+  -OutFile "$dest\hcl2json.exe"
+# Add %USERPROFILE%\bin to PATH for the current session (or add it permanently via System Properties)
+$env:Path = "$dest;$env:Path"
+
+# Verify
+node --version; npm --version; hcl2json --version
+```
+
+> **WSL alternative:** if you already work in WSL, follow the Linux instructions inside the WSL shell. Performance is best when the Terraform source tree lives in the WSL filesystem (`~/...`) rather than a Windows mount (`/mnt/c/...`).
 
 ---
 
 ## Installation
 
-### From npm (recommended)
+Pick whichever fits your workflow. Both produce a global `infrarails` command on `PATH`.
+
+### From npm (recommended for end users)
 
 ```bash
 npm install -g infrarails
 ```
 
-### From source
+To upgrade later:
 
 ```bash
-git clone https://github.com/your-org/infrarails.git
+npm update -g infrarails        # or: npm install -g infrarails@latest
+```
+
+To uninstall:
+
+```bash
+npm uninstall -g infrarails
+```
+
+### From GitHub (clone + build)
+
+Use this if you want to track `main`, run from a feature branch, or modify the rules locally. Requires the prerequisites above (Node 18+, `hcl2json`).
+
+```bash
+# 1. Clone
+git clone https://github.com/policyrails/infrarails.git
 cd infrarails
+
+# 2. Install dependencies and build the CLI
 npm install
 npm run build
-npm link   # makes `infrarails` available globally
+
+# 3. Expose the local build as a global `infrarails` command
+npm link
 ```
+
+`npm link` creates a symlink in your global `node_modules` pointing at this checkout, so `git pull && npm run build` is enough to pick up upstream changes — no re-link needed. To unlink:
+
+```bash
+npm unlink -g infrarails
+```
+
+> **Windows (PowerShell):** the same three commands work as written. `npm link` may need an elevated shell the first time, depending on how Node was installed.
 
 ---
 
@@ -302,6 +384,18 @@ Self-contained, single-file HTML report with:
 ```bash
 infrarails ./infra/ --format html -o report.html
 open report.html
+```
+
+### PDF
+
+Single-file, paginated PDF rendered server-side via [`pdfkit`](https://pdfkit.org/) — no headless Chromium, no system dependencies. Layout mirrors the HTML report (summary bar, status sections, framework pills, full disclaimer). Recommended for sharing with auditors and over channels where HTML is awkward.
+
+PDF is binary, so `-o` is required; running `--format pdf` without `-o` exits with code `2` rather than dumping bytes into the terminal.
+
+On Windows, PDF is the preferred share format because Windows SmartScreen flags HTML opened from UNC paths (`\\wsl.localhost\...`, network shares); PDFs open without that warning.
+
+```bash
+infrarails ./infra/ --format pdf -o report.pdf
 ```
 
 ### JSON
