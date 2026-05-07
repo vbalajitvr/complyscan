@@ -265,7 +265,7 @@ describeIf('CLI e2e', () => {
       (f: { ruleId: string; status: string }) => f.ruleId === 'S-12.1.1',
     );
     expect(finding?.status).toBe('FAIL');
-    expect(finding?.description).toMatch(/all data-delivery toggles/i);
+    expect(finding?.description).toMatch(/every \*_data_delivery_enabled toggle/i);
   });
 
   it('regression: large-data bucket with no lifecycle should fail S-12.1.2b', () => {
