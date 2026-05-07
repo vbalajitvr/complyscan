@@ -505,7 +505,7 @@ Once Sprint 1B (`--plan` mode) lands, scanning Terraform plan JSON eliminates mo
 |---|---|---|
 | **1A** | Done | Terraform HCL/JSON source scanning - 7 rules, value resolver, two-phase engine, cross-stack/local-module detection, NIST + ISO cross-references, terminal/JSON/HTML outputs |
 | **1B** | In progress | `--plan` mode: scan `terraform show -json` plan/state output - eliminates `INCONCLUSIVE` for CI gates |
-| **1C** | Planned | CDK and CloudFormation support; Bedrock Agent guardrail rules; additional FR-2 checks |
+| **1C** | Planned | CDK and CloudFormation support; Bedrock Agent guardrail rules
 
 ### Sprint 1B preview - plan/state mode
 
