@@ -285,6 +285,12 @@ For other distros (Fedora/Arch/etc.), install Node from your package manager and
 # OpenJS.NodeJS.LTS currently resolves to a 20.x release.
 winget install OpenJS.NodeJS.LTS
 
+# Allow npm (a .ps1 script) to run. On a fresh Windows install the default
+# execution policy is Restricted, which makes `npm --version` fail with
+# "running scripts is disabled on this system". CurrentUser scope is enough
+# and does not require admin.
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+
 # hcl2json - download the Windows binary and put it on PATH
 $dest = "$env:USERPROFILE\bin"
 New-Item -ItemType Directory -Force -Path $dest | Out-Null
@@ -294,9 +300,11 @@ Invoke-WebRequest `
 # Add %USERPROFILE%\bin to PATH for the current session (or add it permanently via System Properties)
 $env:Path = "$dest;$env:Path"
 
-# Verify
+# Verify (open a new PowerShell window first if you just changed the execution policy)
 node --version; npm --version; hcl2json --version
 ```
+
+> **If `Set-ExecutionPolicy` fails** with a Group Policy error (common on managed/corporate machines), use one of these workarounds instead: invoke npm via `cmd.exe` (`cmd /c npm --version`) or run a single command with a per-process bypass (`powershell -ExecutionPolicy Bypass -Command "npm install -g infrarails"`).
 
 > **WSL alternative:** if you already work in WSL, follow the Linux instructions inside the WSL shell. Performance is best when the Terraform source tree lives in the WSL filesystem (`~/...`) rather than a Windows mount (`/mnt/c/...`).
 
