@@ -69,8 +69,8 @@ infrarails ./infra/ --format html -o report.html
 | `S-12.1.1` | FAIL | 1 | 12 | AWS Bedrock model invocation logging is configured when Bedrock is in use |
 | `S-12.1.2a` | WARN | 2 | 12 | CloudWatch log group used for Bedrock logs has a retention policy >= 180 days, or a forwarder pipe to an external log system was detected |
 | `S-12.1.2b` | FAIL | 2 | 12 | S3 bucket used for Bedrock logs has a lifecycle policy of at least 180 days (FAIL below 180; WARN 180-364; PASS at >= 365) |
-| `S-12.x.1` | WARN | 2 | 12 | S3 log bucket has versioning (or object lock) enabled |
-| `S-12.x.2a` | WARN | 2 | 12 | S3 log bucket has KMS server-side encryption configured |
+| `S-12.x.1` | FAIL | 2 | 12 | S3 log bucket has versioning (or object lock) enabled |
+| `S-12.x.2a` | FAIL | 2 | 12 | S3 log bucket has KMS server-side encryption configured |
 | `S-12.x.4` | FAIL | 2 | 12 | A CloudTrail trail is present and enabled |
 | `S-12.x.5` | WARN | 2 | 12 | Flags remote modules whose contents the scanner cannot inspect |
 
