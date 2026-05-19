@@ -1,0 +1,75 @@
+name: Publish to npm
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version bump: patch | minor | major | or explicit semver (e.g. 1.2.3)'
+        required: true
+        default: 'patch'
+      dry-run:
+        description: 'Dry run (build + pack, do not publish)'
+        type: boolean
+        required: false
+        default: false
+
+concurrency:
+  group: publish-npm
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+          cache: 'npm'
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - run: npm ci
+
+      - run: npm test
+
+      - run: npm run build
+
+      - name: Bump version
+        id: bump
+        run: |
+          npm version "${{ inputs.version }}" -m "chore(release): v%s"
+          echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Pack (dry run preview)
+        run: npm pack --dry-run
+
+      - name: Publish to npm
+        if: ${{ inputs.dry-run == false }}
+        run: npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Push tag and commit
+        if: ${{ inputs.dry-run == false }}
+        run: git push --follow-tags
+
+      - name: Create GitHub Release
+        if: ${{ inputs.dry-run == false }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "v${{ steps.bump.outputs.version }}" \
+            --title "v${{ steps.bump.outputs.version }}" \
+            --generate-notes
