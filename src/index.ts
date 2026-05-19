@@ -13,7 +13,7 @@ const program = new Command();
 program
   .name('infrarails')
   .description('Scan Terraform HCL files for EU AI Act Article 12 compliance gaps')
-  .version('0.1.0')
+  .version('0.2.0')
   .argument('<directory>', 'Directory containing Terraform .tf files')
   .option(
     '-f, --format <format>',
@@ -27,7 +27,7 @@ program
   )
   .option(
     '--strict-account-logging',
-    'Escalate user-fixable INCONCLUSIVE findings to FAIL (requires --plan)',
+    'Assert the scanned tree is the entire estate: escalates missing-logging and forwarder-less retention findings to FAIL. With --plan, also escalates user-fixable INCONCLUSIVE findings to FAIL.',
     false,
   )
   .option(
