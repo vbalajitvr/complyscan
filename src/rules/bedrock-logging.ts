@@ -47,8 +47,13 @@ export const bedrockLoggingRule: ScanRule = {
   phase1: true,
 
   run(files: ParsedFile[], context: ScanContext): Finding[] {
-    const configs = findResources(files, 'aws_bedrock_model_invocation_logging_configuration');
-    const agentResources = findResources(files, 'aws_bedrockagent_agent');
+    const overlay = context.planOverlay;
+    const configs = findResources(
+      files,
+      'aws_bedrock_model_invocation_logging_configuration',
+      overlay,
+    );
+    const agentResources = findResources(files, 'aws_bedrockagent_agent', overlay);
     const hasAgent = agentResources.length > 0;
     const agentNames = agentResources.map((a) => a.name);
 
@@ -57,7 +62,7 @@ export const bedrockLoggingRule: ScanRule = {
       return configs.map((config) => evaluateLoggingConfig(config, hasAgent, agentNames));
     }
 
-    const direct: DirectUsage[] = findBedrockResources(files).map((r) => ({
+    const direct: DirectUsage[] = findBedrockResources(files, overlay).map((r) => ({
       resourceAddress: r.resourceAddress,
       type: r.type,
       filePath: r.filePath,
@@ -74,9 +79,13 @@ export const bedrockLoggingRule: ScanRule = {
 
     // No Bedrock signals at all. SKIP, unless there are unscannable remote
     // modules - in which case INCONCLUSIVE because Bedrock may live inside.
+    // With --plan, remote module contents are visible via the overlay
+    // (planned_values.child_modules), so findBedrockResources(files, overlay)
+    // has already searched them - absence here means they truly contain no
+    // Bedrock resources and a clean SKIP is correct.
     if (!hasDirect && !hasIndirect) {
       const remoteModules = findRemoteModules(files);
-      if (remoteModules.length === 0) {
+      if (remoteModules.length === 0 || overlay) {
         return [
           {
             ruleId: this.id,

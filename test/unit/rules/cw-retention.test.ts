@@ -220,4 +220,83 @@ describe('S-12.1.2a CloudWatch Retention', () => {
     expect(findings).toHaveLength(1);
     expect(findings[0].status).toBe('WARN');
   });
+
+  describe('--strict-account-logging escalation (forwarder-aware)', () => {
+    const filterFor = (logGroupName: string) => ({
+      aws_cloudwatch_log_subscription_filter: {
+        datadog: [
+          {
+            log_group_name: logGroupName,
+            destination_arn: 'arn:aws:lambda:us-east-1:0:function:fwd',
+            filter_pattern: '',
+          },
+        ],
+      },
+    });
+
+    it('FAIL when log group missing and no forwarder', () => {
+      const ctx = bedrockContext({ strictAccountLogging: true });
+      const findings = cwRetentionRule.run([makeParsedFile({})], ctx);
+      expect(findings[0].status).toBe('FAIL');
+      expect(findings[0].description).toContain('Strict account-logging mode');
+    });
+
+    it('stays WARN when log group missing but forwarder present', () => {
+      const ctx = bedrockContext({ strictAccountLogging: true });
+      const findings = cwRetentionRule.run(
+        [makeParsedFile(filterFor('/aws/bedrock/invocation-logs'))],
+        ctx,
+      );
+      expect(findings[0].status).toBe('WARN');
+    });
+
+    it('FAIL when retention < 180 and no forwarder', () => {
+      const ctx = bedrockContext({ strictAccountLogging: true });
+      const files = [
+        makeParsedFile({
+          aws_cloudwatch_log_group: {
+            bedrock_logs: [{ name: '/aws/bedrock/invocation-logs', retention_in_days: 7 }],
+          },
+        }),
+      ];
+      expect(cwRetentionRule.run(files, ctx)[0].status).toBe('FAIL');
+    });
+
+    it('stays WARN when retention < 180 but forwarder present', () => {
+      const ctx = bedrockContext({ strictAccountLogging: true });
+      const files = [
+        makeParsedFile({
+          aws_cloudwatch_log_group: {
+            bedrock_logs: [{ name: '/aws/bedrock/invocation-logs', retention_in_days: 7 }],
+          },
+          ...filterFor('/aws/bedrock/invocation-logs'),
+        }),
+      ];
+      expect(cwRetentionRule.run(files, ctx)[0].status).toBe('WARN');
+    });
+
+    it('FAIL when retention_in_days unset and no forwarder', () => {
+      const ctx = bedrockContext({ strictAccountLogging: true });
+      const files = [
+        makeParsedFile({
+          aws_cloudwatch_log_group: {
+            bedrock_logs: [{ name: '/aws/bedrock/invocation-logs' }],
+          },
+        }),
+      ];
+      expect(cwRetentionRule.run(files, ctx)[0].status).toBe('FAIL');
+    });
+
+    it('180-364 day retention stays WARN even without forwarder (retention exists)', () => {
+      const ctx = bedrockContext({ strictAccountLogging: true });
+      const files = [
+        makeParsedFile({
+          aws_cloudwatch_log_group: {
+            bedrock_logs: [{ name: '/aws/bedrock/invocation-logs', retention_in_days: 200 }],
+          },
+        }),
+      ];
+      expect(cwRetentionRule.run(files, ctx)[0].status).toBe('WARN');
+    });
+  });
 });

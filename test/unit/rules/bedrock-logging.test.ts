@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { bedrockLoggingRule } from '../../../src/rules/bedrock-logging';
-import { makeParsedFile, emptyContext } from './helpers';
+import { makeParsedFile, emptyContext, emptyPlanOverlay } from './helpers';
 
 describe('S-12.1.1 Bedrock Logging', () => {
   it('should SKIP when no Bedrock resources and no logging config exist', () => {
@@ -181,6 +181,28 @@ describe('S-12.1.1 Bedrock Logging', () => {
     expect(findings).toHaveLength(1);
     expect(findings[0].status).toBe('INCONCLUSIVE');
     expect(findings[0].description).toContain('"bedrock"');
+  });
+
+  it('should SKIP (not INCONCLUSIVE) when no Bedrock found, remote modules exist, but a plan overlay is present', () => {
+    const files = [
+      {
+        filePath: 'main.tf',
+        rawHcl: '',
+        json: {
+          module: {
+            bedrock: [{ source: 'terraform-aws-modules/bedrock/aws' }],
+          },
+        },
+      },
+    ];
+
+    const findings = bedrockLoggingRule.run(
+      files,
+      emptyContext({ planOverlay: emptyPlanOverlay() }),
+    );
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0].status).toBe('SKIP');
   });
 
   it('should be a phase1 rule', () => {

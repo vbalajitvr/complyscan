@@ -1,0 +1,48 @@
+{
+  "format_version": "1.2",
+  "terraform_version": "1.7.5",
+  "planned_values": {
+    "root_module": {
+      "resources": [
+        {
+          "address": "aws_bedrockagent_agent.writer",
+          "type": "aws_bedrockagent_agent",
+          "name": "writer",
+          "values": { "agent_name": "writer-agent" }
+        },
+        {
+          "address": "aws_bedrock_guardrail.safety",
+          "type": "aws_bedrock_guardrail",
+          "name": "safety",
+          "values": { "name": "safety" }
+        },
+        {
+          "address": "aws_bedrock_model_invocation_logging_configuration.this",
+          "type": "aws_bedrock_model_invocation_logging_configuration",
+          "name": "this",
+          "values": {
+            "logging_config": {
+              "text_data_delivery_enabled": true,
+              "s3_config": { "bucket_name": "(sensitive value)" }
+            }
+          }
+        }
+      ]
+    }
+  },
+  "resource_changes": [
+    {
+      "address": "aws_bedrock_model_invocation_logging_configuration.this",
+      "type": "aws_bedrock_model_invocation_logging_configuration",
+      "name": "this",
+      "change": {
+        "actions": ["create"],
+        "after_sensitive": {
+          "logging_config": {
+            "s3_config": { "bucket_name": true }
+          }
+        }
+      }
+    }
+  ]
+}

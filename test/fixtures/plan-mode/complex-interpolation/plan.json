@@ -1,0 +1,48 @@
+{
+  "format_version": "1.2",
+  "terraform_version": "1.7.5",
+  "variables": {
+    "env": { "value": "prod" }
+  },
+  "planned_values": {
+    "root_module": {
+      "resources": [
+        {
+          "address": "aws_s3_bucket.logs",
+          "type": "aws_s3_bucket",
+          "name": "logs",
+          "values": { "bucket": "acme-prod-bedrock-logs" }
+        },
+        {
+          "address": "aws_cloudwatch_log_group.bedrock",
+          "type": "aws_cloudwatch_log_group",
+          "name": "bedrock",
+          "values": { "name": "/aws/bedrock/prod/invocation-logs", "retention_in_days": 365 }
+        },
+        {
+          "address": "aws_bedrock_model_invocation_logging_configuration.main",
+          "type": "aws_bedrock_model_invocation_logging_configuration",
+          "name": "main",
+          "values": {
+            "logging_config": {
+              "text_data_delivery_enabled": true,
+              "s3_config": { "bucket_name": "acme-prod-bedrock-logs" },
+              "cloudwatch_config": {
+                "log_group_name": "/aws/bedrock/prod/invocation-logs",
+                "role_arn": "arn:aws:iam::123456789012:role/bedrock-cw-role"
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  "resource_changes": [
+    {
+      "address": "aws_bedrock_model_invocation_logging_configuration.main",
+      "type": "aws_bedrock_model_invocation_logging_configuration",
+      "name": "main",
+      "change": { "actions": ["create"] }
+    }
+  ]
+}

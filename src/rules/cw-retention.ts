@@ -1,6 +1,6 @@
-import { ScanRule, Finding, ParsedFile, ScanContext } from '../types';
+import { ScanRule, Finding, ParsedFile, PlanOverlay, ScanContext, UnresolvableReason } from '../types';
 import { findResources, findResourceLine, getNestedValue, inconclusiveFromUnresolved } from '../utils/resource-helpers';
-import { resolveExpression, resolveScalarReference } from '../resolver';
+import { resolveExpression, resolveOrPlanFallback, resolveScalarReference } from '../resolver';
 import { isUnresolvedScalar } from '../utils/literal';
 
 const MIN_RETENTION_DAYS = 180;
@@ -46,15 +46,22 @@ const FORWARDER_NOTE_WHEN_MISSING =
 function hasSubscriptionFilterFor(
   files: ParsedFile[],
   targetLogGroupName: string,
+  overlay?: PlanOverlay,
 ): boolean {
-  const filters = findResources(files, 'aws_cloudwatch_log_subscription_filter');
+  // Threading the overlay here matters in practice: Datadog/Splunk/SIEM
+  // forwarder modules are commonly consumed as remote modules that take a
+  // log group name (or ARN) as input and declare the subscription filter
+  // internally. Without the overlay, the filter is invisible to the scanner
+  // and the forwarder-aware path in cw-retention falsely escalates retention
+  // findings to FAIL under --strict-account-logging.
+  const filters = findResources(files, 'aws_cloudwatch_log_subscription_filter', overlay);
   for (const f of filters) {
     const lgName = getNestedValue(f.body, 'log_group_name');
 
     if (lgName === targetLogGroupName) return true;
 
     if (typeof lgName === 'string') {
-      const result = resolveExpression(lgName, files);
+      const result = resolveExpression(lgName, files, 'log_group_name', undefined, overlay);
       if (result?.kind === 'literal' && result.value === targetLogGroupName) return true;
       if (result?.kind === 'address' && result.value === targetLogGroupName) return true;
       if (result?.kind === 'address' && result.value === `aws_cloudwatch_log_group.${targetLogGroupName}`) return true;
@@ -108,7 +115,7 @@ export const cwRetentionRule: ScanRule = {
       ];
     }
 
-    const logGroups = findResources(files, 'aws_cloudwatch_log_group');
+    const logGroups = findResources(files, 'aws_cloudwatch_log_group', context.planOverlay);
 
     for (const targetName of context.logGroupNames) {
       const matching = logGroups.find((lg) => {
@@ -119,9 +126,19 @@ export const cwRetentionRule: ScanRule = {
         if (lg.name === targetName) return true;
         if (`aws_cloudwatch_log_group.${lg.name}` === targetName) return true;
 
-        // Resolve variable/local references in the name attribute
+        // Resolve variable/local references in the name attribute.
+        // With overlay, fall back to the log group's own plan-resolved `name`
+        // attribute when the expression is a complex interpolation.
         if (typeof name === 'string') {
-          const result = resolveExpression(name, files);
+          const result = resolveOrPlanFallback(
+            name,
+            `aws_cloudwatch_log_group.${lg.name}`,
+            'name',
+            files,
+            'name',
+            undefined,
+            context.planOverlay,
+          );
           if (result?.kind === 'literal' && result.value === targetName) return true;
           if (result?.kind === 'address' && result.value === targetName) return true;
         }
@@ -130,12 +147,15 @@ export const cwRetentionRule: ScanRule = {
       });
 
       if (!matching) {
-        const forwarderFound = hasSubscriptionFilterFor(files, targetName);
+        const forwarderFound = hasSubscriptionFilterFor(files, targetName, context.planOverlay);
+        const escalate = context.strictAccountLogging && !forwarderFound;
         findings.push({
           ruleId: this.id,
-          status: 'WARN',
+          status: escalate ? 'FAIL' : 'WARN',
           filePath: '',
-          description: `CloudWatch log group "${targetName}" is referenced by Bedrock invocation logging but not declared in any scanned Terraform file - its retention is not under this repo's IaC control.`,
+          description: escalate
+            ? `CloudWatch log group "${targetName}" is referenced by Bedrock invocation logging but not declared in any scanned Terraform file, and no CloudWatch subscription filter forwards it out-of-repo. (Strict account-logging mode: missing log group with no forwarder treated as FAIL.)`
+            : `CloudWatch log group "${targetName}" is referenced by Bedrock invocation logging but not declared in any scanned Terraform file - its retention is not under this repo's IaC control.`,
           remediation:
             `Either declare an aws_cloudwatch_log_group resource for "${targetName}" with ` +
             `retention_in_days >= ${MIN_RETENTION_DAYS} (recommended: ${RECOMMENDED_RETENTION_DAYS}), ` +
@@ -158,7 +178,12 @@ export const cwRetentionRule: ScanRule = {
       // turns "INCONCLUSIVE because expression" into a real verdict whenever
       // the default is in the scanned repo.
       if (retentionDays === undefined && isUnresolvedScalar(retention)) {
-        const resolved = resolveScalarReference(retention, files, matching.filePath);
+        const resolved = resolveScalarReference(
+          retention,
+          files,
+          matching.filePath,
+          context.planOverlay,
+        );
         if (resolved) {
           if (typeof resolved.value === 'number') {
             retentionDays = resolved.value;
@@ -172,8 +197,20 @@ export const cwRetentionRule: ScanRule = {
       // Still unresolved after walking variable/local defaults - the value
       // is supplied at apply time (var with no default, module input, data
       // source, complex interpolation). Surface INCONCLUSIVE rather than
-      // silently treating it as "not declared".
+      // silently treating it as "not declared". Tag with the unresolvable
+      // reason so the runner-side strict-mode post-processor can escalate
+      // escalatable reasons to FAIL while leaving genuinely unknowable
+      // ones (plan-known-after-apply, plan-sensitive-redacted) alone.
       if (retentionDays === undefined && isUnresolvedScalar(retention)) {
+        let unresolvedReason: UnresolvableReason | undefined;
+        const probe = resolveExpression(
+          retention,
+          files,
+          'retention_in_days',
+          matching.filePath,
+          context.planOverlay,
+        );
+        if (probe?.kind === 'unresolvable') unresolvedReason = probe.reason;
         findings.push({
           ruleId: this.id,
           status: 'INCONCLUSIVE',
@@ -187,6 +224,7 @@ export const cwRetentionRule: ScanRule = {
           regulatoryReference: this.regulatoryReference,
           nistReference: this.nistReference,
           isoReference: this.isoReference,
+          unresolvedReason,
         });
         continue;
       }
@@ -206,13 +244,16 @@ export const cwRetentionRule: ScanRule = {
           isoReference: this.isoReference,
           });
         } else {
-          const forwarderFound = hasSubscriptionFilterFor(files, targetName);
+          const forwarderFound = hasSubscriptionFilterFor(files, targetName, context.planOverlay);
+          const escalate = context.strictAccountLogging && !forwarderFound;
           findings.push({
             ruleId: this.id,
-            status: 'WARN',
+            status: escalate ? 'FAIL' : 'WARN',
             filePath: matching.filePath,
             line,
-            description: `CloudWatch log group "${targetName}" has no retention_in_days declared. Behaviour falls back to whatever was previously set in AWS - local retention is not under IaC control.`,
+            description: escalate
+              ? `CloudWatch log group "${targetName}" has no retention_in_days declared and no CloudWatch subscription filter forwards it out-of-repo. (Strict account-logging mode: missing retention with no forwarder treated as FAIL.)`
+              : `CloudWatch log group "${targetName}" has no retention_in_days declared. Behaviour falls back to whatever was previously set in AWS - local retention is not under IaC control.`,
             remediation:
               `Set retention_in_days explicitly: a value >= ${MIN_RETENTION_DAYS} ` +
               `(recommended: ${RECOMMENDED_RETENTION_DAYS}), or 0 for never-expire. ` +
@@ -224,13 +265,16 @@ export const cwRetentionRule: ScanRule = {
           });
         }
       } else if (retentionDays < MIN_RETENTION_DAYS) {
-        const forwarderFound = hasSubscriptionFilterFor(files, targetName);
+        const forwarderFound = hasSubscriptionFilterFor(files, targetName, context.planOverlay);
+        const escalate = context.strictAccountLogging && !forwarderFound;
         findings.push({
           ruleId: this.id,
-          status: 'WARN',
+          status: escalate ? 'FAIL' : 'WARN',
           filePath: matching.filePath,
           line,
-          description: `CloudWatch log group "${targetName}" retention is ${retentionDays} days, below the ${MIN_RETENTION_DAYS}-day floor infrarails applies for high-risk AI logging.`,
+          description: escalate
+            ? `CloudWatch log group "${targetName}" retention is ${retentionDays} days (below the ${MIN_RETENTION_DAYS}-day floor) and no CloudWatch subscription filter forwards it out-of-repo. (Strict account-logging mode: sub-floor retention with no forwarder treated as FAIL.)`
+            : `CloudWatch log group "${targetName}" retention is ${retentionDays} days, below the ${MIN_RETENTION_DAYS}-day floor infrarails applies for high-risk AI logging.`,
           remediation:
             `Increase retention_in_days to >= ${MIN_RETENTION_DAYS} ` +
             `(recommended: ${RECOMMENDED_RETENTION_DAYS}), or confirm retention is ` +

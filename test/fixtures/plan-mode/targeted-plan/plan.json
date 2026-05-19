@@ -1,0 +1,47 @@
+{
+  "format_version": "1.2",
+  "terraform_version": "1.7.5",
+  "planned_values": {
+    "root_module": {
+      "child_modules": [
+        {
+          "address": "module.recruiter_api",
+          "resources": [
+            {
+              "address": "module.recruiter_api.aws_lambda_function.api",
+              "type": "aws_lambda_function",
+              "name": "api",
+              "values": {
+                "function_name": "recruiter-api",
+                "handler": "index.handler",
+                "runtime": "python3.11"
+              }
+            },
+            {
+              "address": "module.recruiter_api.aws_iam_role.lambda",
+              "type": "aws_iam_role",
+              "name": "lambda",
+              "values": {
+                "name": "lambda-exec-role"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "resource_changes": [
+    {
+      "address": "module.recruiter_api.aws_lambda_function.api",
+      "type": "aws_lambda_function",
+      "name": "api",
+      "change": { "actions": ["create"] }
+    },
+    {
+      "address": "module.recruiter_api.aws_iam_role.lambda",
+      "type": "aws_iam_role",
+      "name": "lambda",
+      "change": { "actions": ["no-op"] }
+    }
+  ]
+}

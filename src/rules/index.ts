@@ -8,6 +8,7 @@ import { cloudtrailRule } from './cloudtrail';
 import { remoteModuleWallRule } from './module-wall';
 import { agentGuardrailRule } from './agent-guardrail';
 import { guardrailPresenceRule } from './guardrail-presence';
+import { planDeletionsRule } from './plan-deletions';
 
 export const allRules: ScanRule[] = [
   bedrockLoggingRule,
@@ -19,4 +20,5 @@ export const allRules: ScanRule[] = [
   remoteModuleWallRule,
   agentGuardrailRule,
   guardrailPresenceRule,
+  planDeletionsRule,
 ];
