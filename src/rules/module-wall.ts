@@ -9,7 +9,13 @@ export const remoteModuleWallRule: ScanRule = {
   nistReference: 'NIST AI RMF 1.0: GOVERN 6.1 (third-party AI risk policies); MANAGE 3.1 (third-party AI risk monitoring)',
   isoReference: 'ISO/IEC 42001:2023 Annex A: A.10.3 (Suppliers); A.4.2 (Resource documentation)',
 
-  run(files: ParsedFile[], _context: ScanContext): Finding[] {
+  run(files: ParsedFile[], context: ScanContext): Finding[] {
+    // With --plan, the resources created by remote modules appear in the
+    // plan's planned_values.child_modules and are evaluated by the other
+    // rules directly. The "can't see inside this module" warning is no
+    // longer honest in that case, so suppress it.
+    if (context.planOverlay) return [];
+
     // Only flag remote modules that are *plausibly* part of the Bedrock
     // logging / infra surface - modules whose local name or source URL
     // mentions a Bedrock token, or whose body passes a Bedrock-logging input.

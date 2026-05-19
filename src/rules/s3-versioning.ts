@@ -46,13 +46,21 @@ export const s3VersioningRule: ScanRule = {
       ];
     }
 
-    const versioningConfigs = findResources(files, 'aws_s3_bucket_versioning');
-    const objectLockConfigs = findResources(files, 'aws_s3_bucket_object_lock_configuration');
+    const versioningConfigs = findResources(
+      files,
+      'aws_s3_bucket_versioning',
+      context.planOverlay,
+    );
+    const objectLockConfigs = findResources(
+      files,
+      'aws_s3_bucket_object_lock_configuration',
+      context.planOverlay,
+    );
 
     for (const bucketName of context.logBucketNames) {
       // Check versioning
       const versioningMatch = versioningConfigs.find((vc) =>
-        matchesBucket(vc.body, vc.name, [bucketName], files)
+        matchesBucket(vc.body, vc.name, [bucketName], files, context.planOverlay)
       );
 
       const hasVersioning = versioningMatch &&
@@ -60,7 +68,7 @@ export const s3VersioningRule: ScanRule = {
 
       // Check Object Lock
       const objectLockMatch = objectLockConfigs.find((ol) =>
-        matchesBucket(ol.body, ol.name, [bucketName], files)
+        matchesBucket(ol.body, ol.name, [bucketName], files, context.planOverlay)
       );
 
       const hasObjectLock = !!objectLockMatch;

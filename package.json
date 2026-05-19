@@ -1,10 +1,18 @@
 {
   "name": "infrarails",
-  "version": "0.1.0",
-  "description": "Static scanner for EU AI Act Article 12 compliance gaps in Terraform HCL files",
+  "version": "0.2.0",
+  "description": "Static scanner for EU AI Act Article 9 & 12 compliance gaps in Terraform — checks AWS Bedrock guardrails, logging, retention, and traceability against EU AI Act, NIST AI RMF, and ISO/IEC 42001",
   "main": "dist/index.js",
   "bin": {
     "infrarails": "dist/index.js"
+  },
+  "files": [
+    "dist/",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
   },
   "scripts": {
     "build": "tsup",

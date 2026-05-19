@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { remoteModuleWallRule } from '../../../src/rules/module-wall';
-import { emptyContext } from './helpers';
+import { emptyContext, emptyPlanOverlay } from './helpers';
 import { ParsedFile } from '../../../src/types';
 
 function fileWithModules(
@@ -100,5 +100,14 @@ describe('S-12.x.5 Remote Module Wall', () => {
     expect(findings).toHaveLength(1);
     expect(findings[0].status).toBe('INCONCLUSIVE');
     expect(findings[0].description).toContain('"bedrock"');
+  });
+
+  it('suppresses INCONCLUSIVE when a plan overlay is present (remote-module contents are visible via the plan)', () => {
+    const files = [fileWithModules({ bedrock: { source: 'terraform-aws-modules/bedrock/aws' } })];
+    const findings = remoteModuleWallRule.run(
+      files,
+      emptyContext({ planOverlay: emptyPlanOverlay() }),
+    );
+    expect(findings).toHaveLength(0);
   });
 });

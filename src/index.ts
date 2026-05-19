@@ -4,7 +4,9 @@ import * as fs from 'fs';
 import { ensureHcl2Json } from './utils/hcl2json-check';
 import { parseAllTfFiles } from './parser';
 import { runScan } from './runner';
-import { formatTerminal, formatJson, formatHtml, formatPdf } from './formatter';
+import { parsePlanFile } from './plan-parser';
+import { PlanOverlay } from './types';
+import { formatTerminal, formatJson, formatHtml, formatPdf, formatSarif } from './formatter';
 
 const program = new Command();
 
@@ -13,23 +15,52 @@ program
   .description('Scan Terraform HCL files for EU AI Act Article 12 compliance gaps')
   .version('0.1.0')
   .argument('<directory>', 'Directory containing Terraform .tf files')
-  .option('-f, --format <format>', 'Output format: terminal, json, html, or pdf', 'terminal')
   .option(
-    '-o, --output <file>',
-    'Write the report to a file instead of stdout. Useful for html/json formats so you do not have to shell-redirect.',
+    '-f, --format <format>',
+    'Output format: terminal, json, sarif, html, pdf',
+    'terminal',
   )
+  .option('-o, --output <file>', 'Write report to a file (required for pdf)')
   .option(
     '--no-strict',
-    'Treat INCONCLUSIVE findings as non-blocking (do not affect exit code). Default is strict: INCONCLUSIVE blocks like FAIL/WARN.',
+    'Treat INCONCLUSIVE as PASS for exit code (default: exit 1)',
   )
   .option(
     '--strict-account-logging',
-    'Treat missing Bedrock invocation logging as FAIL even when no in-repo evidence is present. Default is INCONCLUSIVE - most enterprises put the logging config in a separate account-baseline stack.',
+    'Escalate user-fixable INCONCLUSIVE findings to FAIL (requires --plan)',
     false,
+  )
+  .option(
+    '--plan <file>',
+    'Terraform plan JSON (`terraform show -json tfplan.bin`) — resolves variables and scans resources inside modules',
+  )
+  .addHelpText(
+    'after',
+    `
+Examples
+  $ infrarails ./terraform
+  $ infrarails ./terraform --plan tfplan.json -f sarif -o report.sarif
+  $ infrarails ./terraform --no-strict          # don't fail CI on INCONCLUSIVE
+
+Exit codes
+  0  all PASS (or --no-strict with no FAIL/WARN)
+  1  any FAIL/WARN, or INCONCLUSIVE in strict mode (default)
+  2  usage/parse error
+
+Strict flags (independent axes)
+  --no-strict                only affects exit code
+  --strict-account-logging   only affects finding status (needs --plan)
+`,
   )
   .action(async (
     directory: string,
-    options: { format: string; output?: string; strict: boolean; strictAccountLogging: boolean },
+    options: {
+      format: string;
+      output?: string;
+      strict: boolean;
+      strictAccountLogging: boolean;
+      plan?: string;
+    },
   ) => {
     // Check hcl2json is installed
     ensureHcl2Json();
@@ -37,7 +68,7 @@ program
     // Validate format up-front - silent fall-through to terminal mode hides bugs
     // (e.g. an older globally-installed binary asked for "pdf" and writes ANSI
     // text into a .pdf file, producing an unopenable artifact).
-    const VALID_FORMATS = ['terminal', 'json', 'html', 'pdf'];
+    const VALID_FORMATS = ['terminal', 'json', 'sarif', 'html', 'pdf'];
     if (!VALID_FORMATS.includes(options.format)) {
       console.error(
         `Error: unknown format "${options.format}". Valid formats: ${VALID_FORMATS.join(', ')}.`,
@@ -60,6 +91,38 @@ program
       process.exit(2);
     }
 
+    // Validate and parse --plan up-front. Failures are exit-code-2 with
+    // explicit stderr so CI users see the problem instead of silent
+    // fall-through to source-only mode.
+    let overlay: PlanOverlay | undefined;
+    if (options.plan) {
+      const planPath = path.resolve(options.plan);
+      if (!fs.existsSync(planPath) || !fs.statSync(planPath).isFile()) {
+        console.error(`Error: plan file not found: ${planPath}`);
+        process.exit(2);
+      }
+      try {
+        overlay = parsePlanFile(planPath);
+      } catch (err) {
+        console.error(
+          `Error: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        process.exit(2);
+      }
+      if (overlay.flags.noActionableChanges) {
+        console.error(
+          'Note: plan has no create/update/delete actions (refresh-only, or current ' +
+            'state already matches config). Compliance verdicts reflect current cloud ' +
+            'state as known to Terraform; deletion-safety analysis is skipped. Rerun ' +
+            'against a normal apply plan if you need to verify post-apply compliance.',
+        );
+      }
+      console.error(
+        `Info: plan overlay loaded (${overlay.resources.size} resources, ` +
+          `${overlay.deletions.size} deletions, ${overlay.variables.size} variables).`,
+      );
+    }
+
     // Collect and parse all .tf and .tf.json files
     const parsedFiles = parseAllTfFiles(dir);
     if (parsedFiles.length === 0) {
@@ -70,12 +133,15 @@ program
     // Run scan
     const findings = runScan(parsedFiles, {
       strictAccountLogging: options.strictAccountLogging,
+      plan: overlay,
     });
 
     // Format output - PDF is a Buffer, others are strings.
     let rendered: string | Buffer;
     if (options.format === 'json') {
       rendered = formatJson(findings);
+    } else if (options.format === 'sarif') {
+      rendered = formatSarif(findings);
     } else if (options.format === 'html') {
       rendered = formatHtml(findings);
     } else if (options.format === 'pdf') {
@@ -108,7 +174,9 @@ program
       // terminal. Print a one-line tip to stderr so it does not contaminate
       // piped output.
       if (
-        (options.format === 'html' || options.format === 'json') &&
+        (options.format === 'html' ||
+          options.format === 'json' ||
+          options.format === 'sarif') &&
         process.stdout.isTTY
       ) {
         console.error(
@@ -121,8 +189,8 @@ program
       // paths (\\wsl.localhost\..., network shares) but not PDFs.
       if (options.format === 'terminal' && process.stdout.isTTY) {
         console.error(
-          '\nTip: also available as --format json | html | pdf (use -o report.<ext> to save).' +
-            '\n     PDF is recommended when sharing reports - opens cleanly without SmartScreen warnings.',
+          '\nTip: also available as --format json | sarif | html | pdf (use -o report.<ext> to save).' +
+            '\n     SARIF uploads to GitHub Code Scanning; PDF is recommended for sharing.',
         );
       }
     }

@@ -1,5 +1,6 @@
 import chalk from 'chalk';
 import { Finding, FindingStatus } from './types';
+import { allRules } from './rules';
 
 interface ScanSummary {
   total: number;
@@ -177,7 +178,167 @@ export function formatTerminal(findings: Finding[]): string {
 
 export function formatJson(findings: Finding[]): string {
   const summary = summarize(findings);
-  return JSON.stringify({ summary, findings }, null, 2);
+  // Enrich each finding with a structured `frameworks` array so GRC tooling
+  // (Drata, Vanta, ServiceNow GRC, OneTrust) consumes pre-parsed control IDs
+  // instead of regexing the freeform reference strings. Raw strings are kept
+  // for backwards compatibility.
+  const enriched = findings.map((f) => ({
+    ...f,
+    frameworks: findingRefs(f),
+  }));
+  return JSON.stringify({ summary, findings: enriched }, null, 2);
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// SARIF 2.1.0
+// ─────────────────────────────────────────────────────────────────────
+//
+// SARIF (Static Analysis Results Interchange Format, OASIS standard) is the
+// lingua franca for static-analysis output. GitHub Code Scanning, Azure DevOps,
+// GitLab, and the VS Code SARIF Viewer ingest it directly — uploading a SARIF
+// file to GitHub via `github/codeql-action/upload-sarif` surfaces findings
+// inline on PRs and in the repo's Security tab.
+
+const SARIF_SCHEMA =
+  'https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json';
+const SARIF_VERSION = '2.1.0';
+const TOOL_NAME = 'infrarails';
+const TOOL_VERSION = '0.1.0';
+const TOOL_INFO_URI = 'https://github.com/vbalaji/infrarails';
+
+type SarifLevel = 'none' | 'note' | 'warning' | 'error';
+type SarifKind = 'pass' | 'fail' | 'review' | 'notApplicable' | 'informational';
+
+// Status maps to two orthogonal SARIF fields:
+//   - kind  = the audit verdict (pass / fail / review / notApplicable)
+//   - level = the severity GitHub Code Scanning uses to colour the alert
+// INCONCLUSIVE → kind=review (SARIF's "needs human verification" bucket)
+// SKIP → kind=notApplicable so it does not show up as an alert.
+function sarifLevel(status: FindingStatus): SarifLevel {
+  switch (status) {
+    case 'FAIL': return 'error';
+    case 'WARN': return 'warning';
+    case 'INCONCLUSIVE': return 'warning';
+    case 'PASS': return 'none';
+    case 'SKIP': return 'none';
+  }
+}
+
+function sarifKind(status: FindingStatus): SarifKind {
+  switch (status) {
+    case 'PASS': return 'pass';
+    case 'FAIL': return 'fail';
+    case 'WARN': return 'fail';
+    case 'INCONCLUSIVE': return 'review';
+    case 'SKIP': return 'notApplicable';
+  }
+}
+
+interface SarifLocation {
+  physicalLocation: {
+    artifactLocation: { uri: string };
+    region?: { startLine: number };
+  };
+}
+
+function sarifLocations(f: Finding): SarifLocation[] {
+  if (!f.filePath) return [];
+  const loc: SarifLocation = {
+    physicalLocation: { artifactLocation: { uri: f.filePath } },
+  };
+  if (f.line && f.line > 0) {
+    loc.physicalLocation.region = { startLine: f.line };
+  }
+  return [loc];
+}
+
+// Compose the message text. SARIF clients usually display message.text inline
+// on the finding row, so we fold the description + remediation into a single
+// readable string instead of relying on properties bag.
+function sarifMessage(f: Finding): string {
+  if (f.remediation) return `${f.description}\n\nRemediation: ${f.remediation}`;
+  return f.description;
+}
+
+// Stable per-finding fingerprint so GitHub Code Scanning can correlate the
+// same alert across re-runs even when line numbers shift slightly.
+function partialFingerprints(f: Finding): Record<string, string> {
+  return {
+    'ruleId/v1': f.ruleId,
+    'location/v1': `${f.filePath ?? ''}:${f.line ?? ''}`,
+  };
+}
+
+export function formatSarif(findings: Finding[]): string {
+  // Build the rules section from the canonical rule registry so every rule
+  // is described, not just ones with findings in this run. Ordered scanners
+  // (CodeQL, ESLint, Semgrep) all do this — it gives consumers a stable
+  // catalogue of what the tool can find.
+  const rules = allRules.map((r) => ({
+    id: r.id,
+    name: r.id,
+    shortDescription: { text: r.description },
+    fullDescription: { text: r.description },
+    helpUri: TOOL_INFO_URI,
+    defaultConfiguration: {
+      level: r.severity === 'FAIL' ? 'error' : 'warning',
+    },
+    properties: {
+      regulatoryReference: r.regulatoryReference,
+      ...(r.nistReference ? { nistReference: r.nistReference } : {}),
+      ...(r.isoReference ? { isoReference: r.isoReference } : {}),
+      tags: ['compliance', 'eu-ai-act', 'nist-ai-rmf', 'iso-42001'],
+    },
+  }));
+
+  const ruleIndexById = new Map(allRules.map((r, i) => [r.id, i]));
+
+  const results = findings.map((f) => {
+    const result: Record<string, unknown> = {
+      ruleId: f.ruleId,
+      level: sarifLevel(f.status),
+      kind: sarifKind(f.status),
+      message: { text: sarifMessage(f) },
+      locations: sarifLocations(f),
+      partialFingerprints: partialFingerprints(f),
+      properties: {
+        status: f.status,
+        ...(f.regulatoryReference
+          ? { regulatoryReference: f.regulatoryReference }
+          : {}),
+        ...(f.nistReference ? { nistReference: f.nistReference } : {}),
+        ...(f.isoReference ? { isoReference: f.isoReference } : {}),
+        frameworks: findingRefs(f),
+        ...(f.unresolvedReason
+          ? { unresolvedReason: f.unresolvedReason }
+          : {}),
+        ...(f.remediation ? { remediation: f.remediation } : {}),
+      },
+    };
+    const idx = ruleIndexById.get(f.ruleId);
+    if (idx !== undefined) result.ruleIndex = idx;
+    return result;
+  });
+
+  const sarif = {
+    $schema: SARIF_SCHEMA,
+    version: SARIF_VERSION,
+    runs: [
+      {
+        tool: {
+          driver: {
+            name: TOOL_NAME,
+            version: TOOL_VERSION,
+            informationUri: TOOL_INFO_URI,
+            rules,
+          },
+        },
+        results,
+      },
+    ],
+  };
+
+  return JSON.stringify(sarif, null, 2);
 }
 
 // ─────────────────────────────────────────────────────────────────────

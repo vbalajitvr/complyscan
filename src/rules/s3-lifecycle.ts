@@ -60,11 +60,15 @@ export const s3LifecycleRule: ScanRule = {
       ];
     }
 
-    const lifecycleConfigs = findResources(files, 'aws_s3_bucket_lifecycle_configuration');
+    const lifecycleConfigs = findResources(
+      files,
+      'aws_s3_bucket_lifecycle_configuration',
+      context.planOverlay,
+    );
 
     for (const bucketName of context.logBucketNames) {
       const matching = lifecycleConfigs.find((lc) =>
-        matchesBucket(lc.body, lc.name, [bucketName], files)
+        matchesBucket(lc.body, lc.name, [bucketName], files, context.planOverlay)
       );
 
       if (!matching) {

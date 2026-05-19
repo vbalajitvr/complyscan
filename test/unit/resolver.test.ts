@@ -1,9 +1,71 @@
 import { describe, it, expect } from 'vitest';
-import { resolveExpression } from '../../src/resolver';
-import { ParsedFile, HCL2JSONOutput } from '../../src/types';
+import { resolveExpression, resolveOrPlanFallback, resolveScalarReference } from '../../src/resolver';
+import {
+  ParsedFile,
+  HCL2JSONOutput,
+  PlanOverlay,
+  PlanResource,
+} from '../../src/types';
 
 function file(json: HCL2JSONOutput): ParsedFile {
   return { filePath: 'test.tf', json, rawHcl: '' };
+}
+
+function makeOverlay(opts: {
+  variables?: Record<string, string | number | boolean>;
+  resources?: Array<Partial<PlanResource> & { key: string }>;
+  // Optional: multiple instances under the same normalised key for
+  // count/for_each divergence tests. The `key` is the normalised name; entries
+  // become a PlanResource[] under `instancesByNormalised[key]`.
+  instanceGroups?: Array<{
+    key: string;
+    instances: Array<Partial<PlanResource> & { address: string }>;
+  }>;
+  outputs?: Record<string, { value: string | number | boolean; sensitive?: boolean }>;
+}): PlanOverlay {
+  const resources = new Map<string, PlanResource>();
+  const instancesByNormalised = new Map<string, PlanResource[]>();
+  for (const r of opts.resources ?? []) {
+    const pr: PlanResource = {
+      address: r.address ?? r.key,
+      type: r.type ?? r.key.split('.')[0],
+      name: r.name ?? r.key.split('.').slice(1).join('.'),
+      values: r.values ?? {},
+      unknownPaths: r.unknownPaths ?? new Set(),
+      sensitivePaths: r.sensitivePaths ?? new Set(),
+    };
+    resources.set(r.key, pr);
+    instancesByNormalised.set(r.key, [pr]);
+  }
+  for (const group of opts.instanceGroups ?? []) {
+    const list: PlanResource[] = group.instances.map((i) => ({
+      address: i.address,
+      type: i.type ?? group.key.split('.')[0],
+      name: i.name ?? group.key.split('.').slice(1).join('.'),
+      values: i.values ?? {},
+      unknownPaths: i.unknownPaths ?? new Set(),
+      sensitivePaths: i.sensitivePaths ?? new Set(),
+    }));
+    instancesByNormalised.set(group.key, list);
+    if (!resources.has(group.key) && list.length > 0) {
+      resources.set(group.key, list[0]);
+    }
+  }
+  return {
+    formatVersion: '1.2',
+    terraformVersion: '1.7.5',
+    resources,
+    instancesByNormalised,
+    deletions: new Map(),
+    flags: { noActionableChanges: false },
+    variables: new Map(Object.entries(opts.variables ?? {})),
+    outputs: new Map(
+      Object.entries(opts.outputs ?? {}).map(([k, v]) => [
+        k,
+        { value: v.value, sensitive: v.sensitive === true },
+      ]),
+    ),
+  };
 }
 
 describe('resolveExpression', () => {
@@ -55,6 +117,21 @@ describe('resolveExpression', () => {
       ];
       const result = resolveExpression('aws_s3_bucket.logs.id', files);
       expect(result).toEqual({ kind: 'literal', value: 'real-bucket' });
+    });
+
+    it('resolves resource names containing uppercase letters and hyphens', () => {
+      const files = [
+        file({ resource: { aws_s3_bucket: { MyBucket: [{ bucket: 'mixed-case-bucket' }] } } }),
+        file({ resource: { aws_s3_bucket: { 'prod-logs': [{ bucket: 'hyphen-bucket' }] } } }),
+      ];
+      expect(resolveExpression('${aws_s3_bucket.MyBucket.id}', files)).toEqual({
+        kind: 'literal',
+        value: 'mixed-case-bucket',
+      });
+      expect(resolveExpression('${aws_s3_bucket.prod-logs.id}', files)).toEqual({
+        kind: 'literal',
+        value: 'hyphen-bucket',
+      });
     });
   });
 
@@ -132,8 +209,83 @@ describe('resolveExpression', () => {
   });
 
   describe('module outputs', () => {
-    it('classifies module.X.Y as module-output', () => {
+    it('classifies module.X.Y as module-output when no overlay is present', () => {
       const result = resolveExpression('${module.logging.bucket_name}', []);
+      expect(result).toMatchObject({ kind: 'unresolvable', reason: 'module-output' });
+    });
+
+    it('promotes module.X.Y to literal when overlay carries the output value', () => {
+      const overlay = makeOverlay({
+        outputs: { 'module.logging.bucket_name': { value: 'co-access-logs' } },
+      });
+      const result = resolveExpression(
+        '${module.logging.bucket_name}',
+        [],
+        'target_bucket',
+        undefined,
+        overlay,
+      );
+      expect(result).toEqual({ kind: 'literal', value: 'co-access-logs' });
+    });
+
+    it('strips [...] index segments so count/for_each module refs resolve', () => {
+      const overlay = makeOverlay({
+        outputs: { 'module.logging.bucket_name': { value: 'co-access-logs' } },
+      });
+      const result = resolveExpression(
+        '${module.logging[0].bucket_name}',
+        [],
+        'target_bucket',
+        undefined,
+        overlay,
+      );
+      expect(result).toEqual({ kind: 'literal', value: 'co-access-logs' });
+    });
+
+    it('resolves nested module references (module.outer.module.inner.X)', () => {
+      const overlay = makeOverlay({
+        outputs: { 'module.outer.module.inner.bucket_name': { value: 'nested-bucket' } },
+      });
+      const result = resolveExpression(
+        '${module.outer.module.inner.bucket_name}',
+        [],
+        'target_bucket',
+        undefined,
+        overlay,
+      );
+      expect(result).toEqual({ kind: 'literal', value: 'nested-bucket' });
+    });
+
+    it('returns plan-sensitive-redacted when the output is sensitive', () => {
+      const overlay = makeOverlay({
+        outputs: {
+          'module.logging.bucket_name': { value: 'co-access-logs', sensitive: true },
+        },
+      });
+      const result = resolveExpression(
+        '${module.logging.bucket_name}',
+        [],
+        'target_bucket',
+        undefined,
+        overlay,
+      );
+      expect(result).toMatchObject({
+        kind: 'unresolvable',
+        reason: 'plan-sensitive-redacted',
+      });
+    });
+
+    it('falls back to module-output when the overlay has no matching entry', () => {
+      const overlay = makeOverlay({
+        outputs: { 'module.other.foo': { value: 'x' } },
+      });
+      const result = resolveExpression(
+        '${module.logging.bucket_name}',
+        [],
+        'target_bucket',
+        undefined,
+        overlay,
+      );
       expect(result).toMatchObject({ kind: 'unresolvable', reason: 'module-output' });
     });
   });
@@ -212,6 +364,625 @@ describe('resolveExpression', () => {
         '/project/modules/bedrock/main.tf',
       );
       expect(result).toMatchObject({ kind: 'unresolvable', reason: 'local-not-literal' });
+    });
+  });
+
+  describe('plan overlay resolution', () => {
+    it('resolves var.X from overlay.variables when no HCL default exists', () => {
+      const files = [file({ variable: { log_bucket: [{ type: 'string' }] } })];
+      const overlay = makeOverlay({ variables: { log_bucket: 'overlay-bucket' } });
+      const result = resolveExpression(
+        '${var.log_bucket}',
+        files,
+        'logging_config.s3_config.bucket_name',
+        undefined,
+        overlay,
+      );
+      expect(result).toEqual({ kind: 'literal', value: 'overlay-bucket' });
+    });
+
+    it('prefers overlay value over HCL default for var.X', () => {
+      const files = [file({ variable: { env: [{ default: 'dev' }] } })];
+      const overlay = makeOverlay({ variables: { env: 'prod' } });
+      const result = resolveExpression('${var.env}', files, 'f', undefined, overlay);
+      expect(result).toEqual({ kind: 'literal', value: 'prod' });
+    });
+
+    it('resolves aws_<type>.<name>.<attr> from overlay.resources', () => {
+      const overlay = makeOverlay({
+        resources: [
+          {
+            key: 'aws_s3_bucket.logs',
+            values: { bucket: 'overlay-bucket-name' },
+          },
+        ],
+      });
+      const result = resolveExpression(
+        '${aws_s3_bucket.logs.bucket}',
+        [],
+        'f',
+        undefined,
+        overlay,
+      );
+      expect(result).toEqual({ kind: 'literal', value: 'overlay-bucket-name' });
+    });
+
+    it('returns plan-known-after-apply when attribute is in unknownPaths', () => {
+      const overlay = makeOverlay({
+        resources: [
+          {
+            key: 'aws_s3_bucket.logs',
+            values: { bucket: null },
+            unknownPaths: new Set(['bucket']),
+          },
+        ],
+      });
+      const result = resolveExpression(
+        '${aws_s3_bucket.logs.bucket}',
+        [],
+        'f',
+        undefined,
+        overlay,
+      );
+      expect(result).toMatchObject({
+        kind: 'unresolvable',
+        reason: 'plan-known-after-apply',
+      });
+    });
+
+    it('returns plan-sensitive-redacted when attribute is in sensitivePaths', () => {
+      const overlay = makeOverlay({
+        resources: [
+          {
+            key: 'aws_s3_bucket.logs',
+            values: { bucket: 'real-but-hidden' },
+            sensitivePaths: new Set(['bucket']),
+          },
+        ],
+      });
+      const result = resolveExpression(
+        '${aws_s3_bucket.logs.bucket}',
+        [],
+        'f',
+        undefined,
+        overlay,
+      );
+      expect(result).toMatchObject({
+        kind: 'unresolvable',
+        reason: 'plan-sensitive-redacted',
+      });
+    });
+
+    it('returns plan-sensitive-redacted when value reads "(sensitive value)"', () => {
+      const overlay = makeOverlay({
+        resources: [
+          {
+            key: 'aws_s3_bucket.logs',
+            values: { bucket: '(sensitive value)' },
+          },
+        ],
+      });
+      const result = resolveExpression(
+        '${aws_s3_bucket.logs.bucket}',
+        [],
+        'f',
+        undefined,
+        overlay,
+      );
+      expect(result).toMatchObject({
+        kind: 'unresolvable',
+        reason: 'plan-sensitive-redacted',
+      });
+    });
+
+    it('resolves data.<type>.<name>.<attr> from overlay when present', () => {
+      const overlay = makeOverlay({
+        resources: [
+          {
+            key: 'data.aws_ssm_parameter.x',
+            type: 'aws_ssm_parameter',
+            values: { value: 'ssm-result' },
+          },
+        ],
+      });
+      const result = resolveExpression(
+        '${data.aws_ssm_parameter.x.value}',
+        [],
+        'f',
+        undefined,
+        overlay,
+      );
+      expect(result).toEqual({ kind: 'literal', value: 'ssm-result' });
+    });
+
+    it('leaves data sources unresolvable when overlay has no entry', () => {
+      const overlay = makeOverlay({});
+      const result = resolveExpression(
+        '${data.aws_ssm_parameter.x.value}',
+        [],
+        'f',
+        undefined,
+        overlay,
+      );
+      expect(result).toMatchObject({
+        kind: 'unresolvable',
+        reason: 'data-source-ssm',
+      });
+    });
+
+    it('normalises indexed addresses on lookup', () => {
+      const overlay = makeOverlay({
+        resources: [
+          {
+            key: 'aws_s3_bucket.logs',
+            values: { bucket: 'real-bucket' },
+          },
+        ],
+      });
+      const result = resolveExpression(
+        '${aws_s3_bucket.logs[0].bucket}',
+        [],
+        'f',
+        undefined,
+        overlay,
+      );
+      expect(result).toEqual({ kind: 'literal', value: 'real-bucket' });
+    });
+
+    it('static AWS_RES_REF accepts indexed addresses (regex update)', () => {
+      const files = [
+        file({ resource: { aws_s3_bucket: { logs: [{ bucket: 'real-bucket' }] } } }),
+      ];
+      const result = resolveExpression('${aws_s3_bucket.logs[0].id}', files);
+      expect(result).toEqual({ kind: 'literal', value: 'real-bucket' });
+    });
+
+    it('returns a literal when every instance under a count/for_each agrees on the attribute', () => {
+      const overlay = makeOverlay({
+        instanceGroups: [
+          {
+            key: 'aws_s3_bucket.logs',
+            instances: [
+              {
+                address: 'aws_s3_bucket.logs[0]',
+                type: 'aws_s3_bucket',
+                name: 'logs',
+                values: { bucket: 'shared-name' },
+              },
+              {
+                address: 'aws_s3_bucket.logs[1]',
+                type: 'aws_s3_bucket',
+                name: 'logs',
+                values: { bucket: 'shared-name' },
+              },
+            ],
+          },
+        ],
+      });
+      const result = resolveExpression(
+        '${aws_s3_bucket.logs.id}',
+        [],
+        'bucket',
+        undefined,
+        overlay,
+      );
+      expect(result).toEqual({ kind: 'literal', value: 'shared-name' });
+    });
+
+    it('returns plan-instances-divergent when instances disagree on the attribute', () => {
+      const overlay = makeOverlay({
+        instanceGroups: [
+          {
+            key: 'aws_s3_bucket.logs',
+            instances: [
+              {
+                address: 'aws_s3_bucket.logs[0]',
+                type: 'aws_s3_bucket',
+                name: 'logs',
+                values: { bucket: 'prod-logs' },
+              },
+              {
+                address: 'aws_s3_bucket.logs[1]',
+                type: 'aws_s3_bucket',
+                name: 'logs',
+                values: { bucket: 'dev-logs-unencrypted' },
+              },
+            ],
+          },
+        ],
+      });
+      const result = resolveExpression(
+        '${aws_s3_bucket.logs.id}',
+        [],
+        'bucket',
+        undefined,
+        overlay,
+      );
+      expect(result).toEqual({
+        kind: 'unresolvable',
+        expression: '${aws_s3_bucket.logs.id}',
+        reason: 'plan-instances-divergent',
+        sourceField: 'bucket',
+      });
+    });
+
+    it('any-instance-unknown wins over a concrete value in a sibling instance', () => {
+      const overlay = makeOverlay({
+        instanceGroups: [
+          {
+            key: 'aws_s3_bucket.logs',
+            instances: [
+              {
+                address: 'aws_s3_bucket.logs[0]',
+                type: 'aws_s3_bucket',
+                name: 'logs',
+                values: { bucket: 'known-name' },
+              },
+              {
+                address: 'aws_s3_bucket.logs[1]',
+                type: 'aws_s3_bucket',
+                name: 'logs',
+                values: { bucket: null },
+                unknownPaths: new Set(['bucket']),
+              },
+            ],
+          },
+        ],
+      });
+      const result = resolveExpression(
+        '${aws_s3_bucket.logs.id}',
+        [],
+        'bucket',
+        undefined,
+        overlay,
+      );
+      expect(result).toEqual({
+        kind: 'unresolvable',
+        expression: '${aws_s3_bucket.logs.id}',
+        reason: 'plan-known-after-apply',
+        sourceField: 'bucket',
+      });
+    });
+  });
+
+  describe('terraform_remote_state references', () => {
+    it('resolves outputs.<key> to a literal when overlay contains the value', () => {
+      const overlay = makeOverlay({
+        resources: [
+          {
+            key: 'data.terraform_remote_state.account_baseline',
+            type: 'terraform_remote_state',
+            values: { outputs: { log_bucket: 'central-logs-bucket' } },
+          },
+        ],
+      });
+      const result = resolveExpression(
+        '${data.terraform_remote_state.account_baseline.outputs.log_bucket}',
+        [],
+        'bucket',
+        undefined,
+        overlay,
+      );
+      expect(result).toEqual({ kind: 'literal', value: 'central-logs-bucket' });
+    });
+
+    it('returns plan-remote-state-unreachable when the data source is absent from the overlay', () => {
+      const overlay = makeOverlay({ resources: [] });
+      const result = resolveExpression(
+        '${data.terraform_remote_state.account_baseline.outputs.log_bucket}',
+        [],
+        'bucket',
+        undefined,
+        overlay,
+      );
+      expect(result).toMatchObject({
+        kind: 'unresolvable',
+        reason: 'plan-remote-state-unreachable',
+      });
+    });
+
+    it('honours unknownPaths for the specific output', () => {
+      const overlay = makeOverlay({
+        resources: [
+          {
+            key: 'data.terraform_remote_state.audit',
+            type: 'terraform_remote_state',
+            values: { outputs: {} },
+            unknownPaths: new Set(['outputs.log_bucket']),
+          },
+        ],
+      });
+      const result = resolveExpression(
+        '${data.terraform_remote_state.audit.outputs.log_bucket}',
+        [],
+        'bucket',
+        undefined,
+        overlay,
+      );
+      expect(result).toMatchObject({
+        kind: 'unresolvable',
+        reason: 'plan-known-after-apply',
+      });
+    });
+
+    it('honours sensitivePaths for the specific output', () => {
+      const overlay = makeOverlay({
+        resources: [
+          {
+            key: 'data.terraform_remote_state.security',
+            type: 'terraform_remote_state',
+            values: { outputs: { api_key: 'secret' } },
+            sensitivePaths: new Set(['outputs.api_key']),
+          },
+        ],
+      });
+      const result = resolveExpression(
+        '${data.terraform_remote_state.security.outputs.api_key}',
+        [],
+        'bucket',
+        undefined,
+        overlay,
+      );
+      expect(result).toMatchObject({
+        kind: 'unresolvable',
+        reason: 'plan-sensitive-redacted',
+      });
+    });
+
+    it('treats the literal "(sensitive value)" string as sensitive', () => {
+      const overlay = makeOverlay({
+        resources: [
+          {
+            key: 'data.terraform_remote_state.security',
+            type: 'terraform_remote_state',
+            values: { outputs: { api_key: '(sensitive value)' } },
+          },
+        ],
+      });
+      const result = resolveExpression(
+        '${data.terraform_remote_state.security.outputs.api_key}',
+        [],
+        'bucket',
+        undefined,
+        overlay,
+      );
+      expect(result).toMatchObject({
+        kind: 'unresolvable',
+        reason: 'plan-sensitive-redacted',
+      });
+    });
+
+    it('returns data-source-other when no overlay is provided (static-only scan)', () => {
+      const result = resolveExpression(
+        '${data.terraform_remote_state.account_baseline.outputs.log_bucket}',
+        [],
+      );
+      expect(result).toMatchObject({
+        kind: 'unresolvable',
+        reason: 'data-source-other',
+      });
+    });
+  });
+
+  describe('resolveOrPlanFallback', () => {
+    it('falls back to overlay-resolved attribute when expression is complex', () => {
+      const overlay = makeOverlay({
+        resources: [
+          {
+            key: 'aws_bedrock_model_invocation_logging_configuration.main',
+            values: {
+              logging_config: {
+                s3_config: { bucket_name: 'final-bucket-name' },
+              },
+            },
+          },
+        ],
+      });
+      const result = resolveOrPlanFallback(
+        '${local.prefix}-${var.env}-logs',
+        'aws_bedrock_model_invocation_logging_configuration.main',
+        'logging_config.s3_config.bucket_name',
+        [],
+        'logging_config.s3_config.bucket_name',
+        undefined,
+        overlay,
+      );
+      expect(result).toEqual({ kind: 'literal', value: 'final-bucket-name' });
+    });
+
+    it('returns the original unresolvable when no overlay is provided', () => {
+      const result = resolveOrPlanFallback(
+        '${local.prefix}-${var.env}-logs',
+        'aws_bedrock_model_invocation_logging_configuration.main',
+        'logging_config.s3_config.bucket_name',
+        [],
+        'f',
+        undefined,
+        undefined,
+      );
+      expect(result).toMatchObject({
+        kind: 'unresolvable',
+        reason: 'complex-interpolation',
+      });
+    });
+
+    it('falls back to plan-known-after-apply when overlay path is unknown', () => {
+      const overlay = makeOverlay({
+        resources: [
+          {
+            key: 'aws_bedrock_model_invocation_logging_configuration.main',
+            values: { logging_config: { s3_config: { bucket_name: null } } },
+            unknownPaths: new Set(['logging_config.s3_config.bucket_name']),
+          },
+        ],
+      });
+      const result = resolveOrPlanFallback(
+        '${local.prefix}-${var.env}-logs',
+        'aws_bedrock_model_invocation_logging_configuration.main',
+        'logging_config.s3_config.bucket_name',
+        [],
+        'f',
+        undefined,
+        overlay,
+      );
+      expect(result).toMatchObject({
+        kind: 'unresolvable',
+        reason: 'plan-known-after-apply',
+      });
+    });
+
+    it('passes through PASS results unchanged', () => {
+      const overlay = makeOverlay({ variables: { env: 'prod' } });
+      const result = resolveOrPlanFallback(
+        '${var.env}',
+        'unused',
+        'unused',
+        [],
+        'f',
+        undefined,
+        overlay,
+      );
+      expect(result).toEqual({ kind: 'literal', value: 'prod' });
+    });
+  });
+
+  describe('resolveScalarReference with overlay', () => {
+    it('resolves var.X from overlay for numeric/boolean variables', () => {
+      const overlay = makeOverlay({ variables: { log_retention_days: 365 } });
+      const result = resolveScalarReference(
+        '${var.log_retention_days}',
+        [],
+        undefined,
+        overlay,
+      );
+      expect(result).toEqual({ kind: 'literal', value: 365 });
+    });
+
+    it('resolves var.config.field from a flattened overlay key', () => {
+      const overlay = makeOverlay({
+        variables: { 'bedrock_logging.text_enabled': true },
+      });
+      const result = resolveScalarReference(
+        '${var.bedrock_logging.text_enabled}',
+        [],
+        undefined,
+        overlay,
+      );
+      expect(result).toEqual({ kind: 'literal', value: true });
+    });
+  });
+
+  describe('object/list variable paths', () => {
+    it('resolves var.config.field from overlay flattened keys', () => {
+      const overlay = makeOverlay({
+        variables: { 'bedrock_logging.bucket_name': 'acme-bedrock-logs' },
+      });
+      const result = resolveExpression(
+        '${var.bedrock_logging.bucket_name}',
+        [],
+        'logging_config.s3_config.bucket_name',
+        undefined,
+        overlay,
+      );
+      expect(result).toEqual({ kind: 'literal', value: 'acme-bedrock-logs' });
+    });
+
+    it('resolves var.list[N] from overlay flattened keys', () => {
+      const overlay = makeOverlay({
+        variables: { 'zones[0]': 'us-east-1a' },
+      });
+      const result = resolveExpression(
+        '${var.zones[0]}',
+        [],
+        'availability_zone',
+        undefined,
+        overlay,
+      );
+      expect(result).toEqual({ kind: 'literal', value: 'us-east-1a' });
+    });
+
+    it('resolves var.config.field from a static object default', () => {
+      const files = [
+        file({
+          variable: {
+            bedrock_logging: [
+              { default: { bucket_name: 'default-bucket', text_enabled: true } },
+            ],
+          },
+        }),
+      ];
+      const result = resolveExpression('${var.bedrock_logging.bucket_name}', files);
+      expect(result).toEqual({ kind: 'literal', value: 'default-bucket' });
+    });
+
+    it('resolves var.list[N] from a static list default', () => {
+      const files = [
+        file({
+          variable: {
+            zones: [{ default: ['us-east-1a', 'us-east-1b'] }],
+          },
+        }),
+      ];
+      const result = resolveExpression('${var.zones[1]}', files);
+      expect(result).toEqual({ kind: 'literal', value: 'us-east-1b' });
+    });
+
+    it('returns var-no-default when dotted path misses both overlay and default', () => {
+      const files = [
+        file({ variable: { bedrock_logging: [{ default: { other_field: 'x' } }] } }),
+      ];
+      const result = resolveExpression(
+        '${var.bedrock_logging.bucket_name}',
+        files,
+        'logging_config.s3_config.bucket_name',
+      );
+      expect(result).toMatchObject({
+        kind: 'unresolvable',
+        reason: 'var-no-default',
+      });
+    });
+
+    it('overlay flattened value beats static default at the same path', () => {
+      const files = [
+        file({
+          variable: {
+            bedrock_logging: [
+              { default: { bucket_name: 'default-bucket' } },
+            ],
+          },
+        }),
+      ];
+      const overlay = makeOverlay({
+        variables: { 'bedrock_logging.bucket_name': 'overlay-bucket' },
+      });
+      const result = resolveExpression(
+        '${var.bedrock_logging.bucket_name}',
+        files,
+        'f',
+        undefined,
+        overlay,
+      );
+      expect(result).toEqual({ kind: 'literal', value: 'overlay-bucket' });
+    });
+
+    it('resolveScalarReference unwraps boolean from a static object default', () => {
+      const files = [
+        file({
+          variable: {
+            bedrock_logging: [
+              { default: { text_enabled: true, image_enabled: false } },
+            ],
+          },
+        }),
+      ];
+      expect(resolveScalarReference('${var.bedrock_logging.text_enabled}', files)).toEqual({
+        kind: 'literal',
+        value: true,
+      });
+      expect(resolveScalarReference('${var.bedrock_logging.image_enabled}', files)).toEqual({
+        kind: 'literal',
+        value: false,
+      });
     });
   });
 

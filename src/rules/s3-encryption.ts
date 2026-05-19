@@ -46,11 +46,15 @@ export const s3EncryptionRule: ScanRule = {
       ];
     }
 
-    const encryptionConfigs = findResources(files, 'aws_s3_bucket_server_side_encryption_configuration');
+    const encryptionConfigs = findResources(
+      files,
+      'aws_s3_bucket_server_side_encryption_configuration',
+      context.planOverlay,
+    );
 
     for (const bucketName of context.logBucketNames) {
       const matching = encryptionConfigs.find((ec) =>
-        matchesBucket(ec.body, ec.name, [bucketName], files)
+        matchesBucket(ec.body, ec.name, [bucketName], files, context.planOverlay)
       );
 
       if (!matching) {

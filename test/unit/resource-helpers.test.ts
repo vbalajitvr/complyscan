@@ -17,8 +17,9 @@ import {
   findBedrockRelatedModuleCalls,
   findBaselineRemoteState,
   findBedrockLoggingReferences,
+  findResources,
 } from '../../src/utils/resource-helpers';
-import { ParsedFile } from '../../src/types';
+import { ParsedFile, PlanOverlay, PlanResource } from '../../src/types';
 
 function pf(json: ParsedFile['json'], filePath = 'main.tf'): ParsedFile {
   return { filePath, json, rawHcl: '' };
@@ -384,6 +385,49 @@ describe('findBaselineRemoteState', () => {
       }),
     ];
     expect(findBaselineRemoteState(files)).toHaveLength(0);
+  });
+});
+
+function planRes(address: string, type: string, name: string, values: Record<string, unknown> = {}): PlanResource {
+  return { address, type, name, values, unknownPaths: new Set(), sensitivePaths: new Set() };
+}
+
+function planOverlayWith(resources: PlanResource[]): PlanOverlay {
+  const map = new Map<string, PlanResource>();
+  for (const r of resources) map.set(r.address, r);
+  return {
+    formatVersion: '1.2',
+    terraformVersion: '1.7.5',
+    resources: map,
+    deletions: new Map(),
+    flags: { noActionableChanges: false },
+    variables: new Map(),
+    outputs: new Map(),
+  };
+}
+
+describe('findResources plan overlay dedup', () => {
+  it('suppresses the root-level plan duplicate of an HCL resource', () => {
+    const files = [pf({ resource: { aws_s3_bucket: { logs: [{ bucket: 'root-logs' }] } } })];
+    const overlay = planOverlayWith([
+      planRes('aws_s3_bucket.logs', 'aws_s3_bucket', 'logs', { bucket: 'root-logs' }),
+    ]);
+    const found = findResources(files, 'aws_s3_bucket', overlay);
+    expect(found).toHaveLength(1);
+    expect(found[0].source).toBe('hcl');
+  });
+
+  it('keeps a module-buried plan resource even when its leaf name collides with an HCL resource', () => {
+    const files = [pf({ resource: { aws_s3_bucket: { logs: [{ bucket: 'root-logs' }] } } })];
+    const overlay = planOverlayWith([
+      planRes('aws_s3_bucket.logs', 'aws_s3_bucket', 'logs', { bucket: 'root-logs' }),
+      planRes('module.audit.aws_s3_bucket.logs', 'aws_s3_bucket', 'logs', { bucket: 'audit-logs' }),
+    ]);
+    const found = findResources(files, 'aws_s3_bucket', overlay);
+    expect(found).toHaveLength(2);
+    const plan = found.find((r) => r.source === 'plan');
+    expect(plan?.address).toBe('module.audit.aws_s3_bucket.logs');
+    expect(plan?.body.bucket).toBe('audit-logs');
   });
 });
 

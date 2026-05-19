@@ -1,4 +1,22 @@
-import { ParsedFile, ScanContext, HCL2JSONOutput } from '../../../src/types';
+import { ParsedFile, ScanContext, HCL2JSONOutput, PlanOverlay } from '../../../src/types';
+
+/**
+ * Build a minimal PlanOverlay for tests that only need the overlay to be
+ * "present" (e.g. to suppress remote-module INCONCLUSIVEs). The overlay
+ * contains no resources, deletions, or variables - rules that read those
+ * collections will see them as empty.
+ */
+export function emptyPlanOverlay(): PlanOverlay {
+  return {
+    formatVersion: '1.2',
+    terraformVersion: '1.7.5',
+    resources: new Map(),
+    deletions: new Map(),
+    flags: { noActionableChanges: false },
+    variables: new Map(),
+    outputs: new Map(),
+  };
+}
 
 /**
  * Create a ParsedFile from a plain resource object for testing.
@@ -12,7 +30,10 @@ export function makeParsedFile(
   return { filePath, json, rawHcl };
 }
 
-export function emptyContext(opts?: { strictAccountLogging?: boolean }): ScanContext {
+export function emptyContext(opts?: {
+  strictAccountLogging?: boolean;
+  planOverlay?: PlanOverlay;
+}): ScanContext {
   return {
     bedrockLoggingDetected: false,
     logBucketNames: [],
@@ -20,6 +41,7 @@ export function emptyContext(opts?: { strictAccountLogging?: boolean }): ScanCon
     unresolvedBucketRefs: [],
     unresolvedGroupRefs: [],
     strictAccountLogging: opts?.strictAccountLogging ?? false,
+    planOverlay: opts?.planOverlay,
   };
 }
 
@@ -29,6 +51,7 @@ export function bedrockContext(opts?: {
   unresolvedBucketRefs?: ScanContext['unresolvedBucketRefs'];
   unresolvedGroupRefs?: ScanContext['unresolvedGroupRefs'];
   strictAccountLogging?: boolean;
+  planOverlay?: PlanOverlay;
 }): ScanContext {
   return {
     bedrockLoggingDetected: true,
@@ -37,5 +60,6 @@ export function bedrockContext(opts?: {
     unresolvedBucketRefs: opts?.unresolvedBucketRefs ?? [],
     unresolvedGroupRefs: opts?.unresolvedGroupRefs ?? [],
     strictAccountLogging: opts?.strictAccountLogging ?? false,
+    planOverlay: opts?.planOverlay,
   };
 }

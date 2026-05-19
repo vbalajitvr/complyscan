@@ -1,4 +1,4 @@
-import { Finding, ParsedFile, ScanRule, UnresolvedRef } from '../types';
+import { Finding, ParsedFile, PlanOverlay, ScanRule, UnresolvedRef } from '../types';
 import { explainReason, resolveExpression } from '../resolver';
 
 /**
@@ -22,18 +22,47 @@ export function inconclusiveFromUnresolved(
     regulatoryReference: rule.regulatoryReference,
     nistReference: rule.nistReference,
     isoReference: rule.isoReference,
+    unresolvedReason: ref.reason,
   };
 }
 
+export interface FoundResource {
+  name: string;
+  body: Record<string, unknown>;
+  filePath: string;
+  rawHcl: string;
+  /**
+   * 'hcl' for resources discovered from scanned HCL files (default).
+   * 'plan' for resources surfaced by the plan overlay - typically buried
+   * inside remote modules with no on-disk HCL in the scanned repo.
+   */
+  source: 'hcl' | 'plan';
+  /**
+   * Fully-qualified plan address (e.g. `module.logging.aws_X.this`) when
+   * source is 'plan'. Undefined for HCL-sourced resources.
+   */
+  address?: string;
+}
+
 /**
- * Find all resources of a given type across all parsed files.
- * Returns an array of { name, body, filePath, rawHcl }.
+ * Find all resources of a given type across all parsed files - and, when
+ * `overlay` is provided, also surface resources of that type from the plan.
+ *
+ * HCL entries win when both HCL and overlay have a resource with the same
+ * `{type, name}`; plan-only entries (resources buried inside remote modules)
+ * are appended. This unlocks rule evaluation against resources the static
+ * scanner would otherwise be blind to.
+ *
+ * `filePath` on plan-only entries is `plan:<full-plan-address>` so findings
+ * stay attributable in audit reports even when no HCL line exists.
  */
 export function findResources(
   files: ParsedFile[],
-  resourceType: string
-): Array<{ name: string; body: Record<string, unknown>; filePath: string; rawHcl: string }> {
-  const results: Array<{ name: string; body: Record<string, unknown>; filePath: string; rawHcl: string }> = [];
+  resourceType: string,
+  overlay?: PlanOverlay,
+): FoundResource[] {
+  const results: FoundResource[] = [];
+  const hclAddresses = new Set<string>();
 
   for (const file of files) {
     const typeBlock = file.json.resource?.[resourceType];
@@ -46,7 +75,41 @@ export function findResources(
         body: body as Record<string, unknown>,
         filePath: file.filePath,
         rawHcl: file.rawHcl,
+        source: 'hcl',
       });
+      hclAddresses.add(`${resourceType}.${name}`);
+    }
+  }
+
+  if (overlay) {
+    // Iterate per-instance (count/for_each yield multiple PlanResource records
+    // under one normalised key). Dedup against HCL by normalised address so
+    // hcl-defined multi-instance resources do not get double-counted: the HCL
+    // block wins, plan instances are skipped. Plan-only resources (e.g. those
+    // buried in remote modules) are appended in full so rules see every
+    // instance and can emit per-instance findings.
+    const instanceLists = overlay.instancesByNormalised
+      ? Array.from(overlay.instancesByNormalised.values())
+      : [Array.from(overlay.resources.values())];
+    for (const list of instanceLists) {
+      for (const planRes of list) {
+        if (planRes.type !== resourceType) continue;
+        // Only suppress *root-level* plan duplicates of HCL resources. Plan
+        // resources buried under a `module.X.` prefix are kept even if their
+        // leaf `<type>.<name>` collides with a root-level HCL block: they are
+        // distinct resources living inside a separate module instance.
+        const isRoot = !planRes.address.startsWith('module.');
+        const rootKey = planRes.address.replace(/\[[^\]]*\]/g, '');
+        if (isRoot && hclAddresses.has(rootKey)) continue;
+        results.push({
+          name: planRes.name,
+          body: planRes.values as Record<string, unknown>,
+          filePath: `plan:${planRes.address}`,
+          rawHcl: '',
+          source: 'plan',
+          address: planRes.address,
+        });
+      }
     }
   }
 
@@ -96,7 +159,8 @@ export function matchesBucket(
   body: Record<string, unknown>,
   resourceName: string,
   targetBucketNames: string[],
-  files?: ParsedFile[]
+  files?: ParsedFile[],
+  overlay?: PlanOverlay,
 ): boolean {
   if (targetBucketNames.length === 0) return false;
 
@@ -129,9 +193,11 @@ export function matchesBucket(
     }
   }
 
-  // If files provided, try resolving variable/local references
+  // If files provided, try resolving variable/local references. With an
+  // overlay, this also picks up plan-resolved aws_s3_bucket.<name>.id ->
+  // literal bucket names from remote modules and var-supplied values.
   if (files && typeof bucket === 'string') {
-    const result = resolveExpression(bucket, files);
+    const result = resolveExpression(bucket, files, 'bucket', undefined, overlay);
     if (result?.kind === 'literal' && targetBucketNames.includes(result.value)) {
       return true;
     }
@@ -359,10 +425,11 @@ export const BASELINE_REMOTE_STATE_NAMES: readonly string[] = [
  */
 export function findBedrockResources(
   files: ParsedFile[],
+  overlay?: PlanOverlay,
 ): Array<{ resourceAddress: string; type: string; name: string; filePath: string }> {
   const results: Array<{ resourceAddress: string; type: string; name: string; filePath: string }> = [];
   for (const type of BEDROCK_DIRECT_RESOURCE_TYPES) {
-    for (const r of findResources(files, type)) {
+    for (const r of findResources(files, type, overlay)) {
       results.push({ resourceAddress: `${type}.${r.name}`, type, name: r.name, filePath: r.filePath });
     }
   }

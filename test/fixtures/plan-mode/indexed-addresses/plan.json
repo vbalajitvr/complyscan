@@ -1,0 +1,106 @@
+{
+  "format_version": "1.2",
+  "terraform_version": "1.7.5",
+  "planned_values": {
+    "root_module": {
+      "resources": [
+        {
+          "address": "aws_bedrockagent_agent.writer",
+          "type": "aws_bedrockagent_agent",
+          "name": "writer",
+          "values": { "agent_name": "writer-agent" }
+        },
+        {
+          "address": "aws_bedrock_guardrail.safety",
+          "type": "aws_bedrock_guardrail",
+          "name": "safety",
+          "values": { "name": "safety" }
+        }
+      ],
+      "child_modules": [
+        {
+          "address": "module.bedrock_governance[0]",
+          "resources": [
+            {
+              "address": "module.bedrock_governance[0].aws_bedrock_model_invocation_logging_configuration.this",
+              "type": "aws_bedrock_model_invocation_logging_configuration",
+              "name": "this",
+              "values": {
+                "logging_config": {
+                  "text_data_delivery_enabled": true,
+                  "s3_config": { "bucket_name": "remote-module-bedrock-logs" },
+                  "cloudwatch_config": {
+                    "log_group_name": "/aws/bedrock/remote-logs",
+                    "role_arn": "arn:aws:iam::123456789012:role/bedrock-cw-role"
+                  }
+                }
+              }
+            },
+            {
+              "address": "module.bedrock_governance[0].aws_s3_bucket.logs[\"prod\"]",
+              "type": "aws_s3_bucket",
+              "name": "logs",
+              "values": { "bucket": "remote-module-bedrock-logs" }
+            },
+            {
+              "address": "module.bedrock_governance[0].aws_s3_bucket_server_side_encryption_configuration.logs[\"prod\"]",
+              "type": "aws_s3_bucket_server_side_encryption_configuration",
+              "name": "logs",
+              "values": {
+                "bucket": "remote-module-bedrock-logs",
+                "rule": [
+                  {
+                    "apply_server_side_encryption_by_default": [
+                      { "sse_algorithm": "aws:kms" }
+                    ]
+                  }
+                ]
+              }
+            },
+            {
+              "address": "module.bedrock_governance[0].aws_s3_bucket_versioning.logs[\"prod\"]",
+              "type": "aws_s3_bucket_versioning",
+              "name": "logs",
+              "values": {
+                "bucket": "remote-module-bedrock-logs",
+                "versioning_configuration": [{ "status": "Enabled" }]
+              }
+            },
+            {
+              "address": "module.bedrock_governance[0].aws_s3_bucket_lifecycle_configuration.logs[\"prod\"]",
+              "type": "aws_s3_bucket_lifecycle_configuration",
+              "name": "logs",
+              "values": {
+                "bucket": "remote-module-bedrock-logs",
+                "rule": [
+                  {
+                    "id": "retain",
+                    "status": "Enabled",
+                    "expiration": [{ "days": 365 }]
+                  }
+                ]
+              }
+            },
+            {
+              "address": "module.bedrock_governance[0].aws_cloudwatch_log_group.bedrock[0]",
+              "type": "aws_cloudwatch_log_group",
+              "name": "bedrock",
+              "values": {
+                "name": "/aws/bedrock/remote-logs",
+                "retention_in_days": 365
+              }
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "resource_changes": [
+    {
+      "address": "module.bedrock_governance[0].aws_bedrock_model_invocation_logging_configuration.this",
+      "type": "aws_bedrock_model_invocation_logging_configuration",
+      "name": "this",
+      "change": { "actions": ["create"] }
+    }
+  ]
+}
